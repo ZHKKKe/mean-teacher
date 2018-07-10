@@ -184,20 +184,73 @@ def validate(eval_loader, model, log, global_step, epoch):
 
     return meters['top1'].avg
 
+def calculate_train_ema_loss(train_loader, l_model, r_model):
+    # loss calculate scale same as train
+    # Note: loss calculate scale not same as validate?
+    LOG.info('Calculate train ema loss initial value.')
+    class_criterion = nn.CrossEntropyLoss(size_average=False, ignore_index=NO_LABEL).cuda()
+    meters = AverageMeterSet()
+    
+    l_model.eval()
+    r_model.eval()
+    
+    end = time.time()
+    for i, ((l_input, r_input), target) in enumerate(train_loader):
+        l_input_var = torch.autograd.Variable(l_input, volatile=True)
+        r_input_var = torch.autograd.Variable(r_input, volatile=True)
+        target_var = torch.autograd.Variable(target.cuda(async=True), volatile=True)
+
+        minibatch_size = len(target_var)
+        labeled_minibatch_size = target_var.data.ne(NO_LABEL).sum()
+        assert labeled_minibatch_size > 0
+
+        l_model_out = l_model(l_input_var)
+        r_model_out = r_model(r_input_var)
+
+        if isinstance(l_model_out, Variable):
+            assert args.logit_distance_cost < 0
+            l_output1 = l_model_out
+            r_output1 = r_model_out
+        else:
+            assert len(l_model_out) == 2
+            assert len(r_model_out) == 2
+            l_output1, _ = l_model_out
+            r_output1, _ = r_model_out
+
+        l_class_loss = class_criterion(l_output1, target_var) / minibatch_size
+        r_class_loss = class_criterion(r_output1, target_var) / minibatch_size
+        meters.update('l_class_loss', l_class_loss.data[0])
+        meters.update('r_class_loss', r_class_loss.data[0])
+
+        # measure elapsed time
+        meters.update('batch_time', time.time() - end)
+        end = time.time()
+
+        if i % args.print_freq == 0:
+            LOG.info('Iter [{0}]\t'
+                     'Time {meters[batch_time]:.3f}\t'
+                     'L_EMA_Loss: {meters[l_class_loss]:.4f}\t'
+                     'R_EMA_Loss: {meters[r_class_loss]:.4f}'.format(i, meters=meters))
+
+    LOG.info(' * L_EMA_LOSS {l.avg:.4f}\tR_EMA_LOSS {r.avg:.4f}'.format(
+        l=meters['l_class_loss'], r=meters['r_class_loss']))
+
+    return meters['l_class_loss'].avg, meters['r_class_loss'].avg
+
 def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, epoch, log):
     global global_step
 
-    def sigmoid_rampup(current, rampup_length):
+    def sigmoid_rampup_ke(current, rampup_length, exp_scale):
         """Exponential rampup from https://arxiv.org/abs/1610.02242"""
         if rampup_length == 0:
             return 1.0
         else:
             current = np.clip(current, 0.0, rampup_length)
             phase = 1.0 - current / rampup_length
-            return float(np.exp(-5.0 * phase * phase))
+            return float(np.exp(exp_scale * phase * phase))
 
     def calculate_consistency_scale(epoch):
-        return args.consistency * sigmoid_rampup(epoch, args.consistency_rampup)
+        return args.consistency * sigmoid_rampup_ke(epoch, args.consistency_rampup, args.consistency_rampup_exp)
 
     class_criterion = nn.CrossEntropyLoss(size_average=False, ignore_index=NO_LABEL).cuda()
     if args.consistency_type == 'mse':
@@ -213,6 +266,9 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, epoch,
 
     l_model.train()
     r_model.train()
+
+    # calculate epoch initial ema loss values
+    l_ema_loss, r_ema_loss = calculate_train_ema_loss(train_loader, l_model, r_model)
 
     end = time.time()
     for i, ((l_input, r_input), target) in enumerate(train_loader):
@@ -260,13 +316,20 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, epoch,
 
         l_loss, r_loss = l_class_loss, r_class_loss
 
+        # update ema loss values
+        l_ema_loss = (1 - args.ema_loss) * l_class_loss.data[0] + args.ema_loss * l_ema_loss 
+        r_ema_loss = (1 - args.ema_loss) * r_class_loss.data[0] + args.ema_loss * r_ema_loss
+        meters.update('l_ema_loss', l_ema_loss)
+        meters.update('r_ema_loss', r_ema_loss)
+
         consistency_loss = 0
         if args.consistency:
             consistency_weight = calculate_consistency_scale(epoch)
             meters.update('cons_weight', consistency_weight)
 
             # left model is better
-            if l_class_loss.data[0] < r_class_loss.data[0]:
+            if l_ema_loss < r_ema_loss:
+            # if l_class_loss.data[0] < r_class_loss.data[0]:
                 l_cons_logit = Variable(l_cons_logit.detach().data, requires_grad=False)
                 consistency_loss = consistency_weight * consistency_criterion(r_cons_logit, l_cons_logit) / minibatch_size
                 r_loss += consistency_loss
@@ -274,7 +337,8 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, epoch,
                 meters.update('cons_loss', consistency_loss.data[0])
 
             # right model is better
-            elif l_class_loss.data[0] > r_class_loss.data[0]:
+            elif l_ema_loss > r_ema_loss:
+            # elif l_class_loss.data[0] > r_class_loss.data[0]:
                 r_cons_logit = Variable(r_cons_logit.detach().data, requires_grad=False)
                 consistency_loss = consistency_weight * consistency_criterion(l_cons_logit, r_cons_logit) / minibatch_size
                 l_loss += consistency_loss
@@ -284,11 +348,11 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, epoch,
             else:
                 consistency_loss = 0
                 meters.update('cons_loss', 0)
-                
+
         else:
             consistency_loss = 0
             meters.update('cons_loss', 0)
-            
+
 
         assert not (np.isnan(l_loss.data[0]) or l_loss.data[0] > 1e5), 'L-Loss explosion: {}'.format(l_loss.data[0])
         assert not (np.isnan(r_loss.data[0]) or r_loss.data[0] > 1e5), 'R-Loss explosion: {}'.format(r_loss.data[0])
@@ -323,15 +387,17 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, epoch,
             LOG.info('Epoch: [{0}][{1}/{2}]\t'
                      'Batch-T {meters[batch_time]:.3f}\t'
                      'Data-T {meters[data_time]:.3f}\t'
+                     'L-EMA {meters[l_ema_loss]:.4f}\t'
+                     'R-EMA {meters[r_ema_loss]:.4f}\t'
                      'L-Class {meters[l_class_loss]:.4f}\t'
                      'R-Class {meters[r_class_loss]:.4f}\t'
                      'Cons {meters[cons_loss]:.4f}\t'
-                     'Better {meters[better_model]:.4f}\n'
+                     'Better {better.sum:.1f}\n'
                      'L-Prec@1 {meters[l_top1]:.3f}\t'
                      'R-Prec@1 {meters[r_top1]:.3f}\t'
                      'L-Prec@5 {meters[l_top5]:.3f}\t'
                      'R-Prec@5 {meters[r_top5]:.3f}'.format(
-                     epoch, i, len(train_loader), meters=meters))
+                     epoch, i, len(train_loader), meters=meters, better=meters['better_model']))
 
             log.record(epoch + i / len(train_loader), {
                 'step': global_step,

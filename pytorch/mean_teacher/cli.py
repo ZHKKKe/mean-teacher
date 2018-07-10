@@ -69,6 +69,8 @@ def create_parser():
                         help='consistency loss type to use')
     parser.add_argument('--consistency-rampup', default=30, type=int, metavar='EPOCHS',
                         help='length of the consistency loss ramp-up')
+    parser.add_argument('--consistency-rampup-exp', default=-5.0, type=float, metavar='EXP',
+                        help='exp scale for consistency sigmoid rampup')
     parser.add_argument('--logit-distance-cost', default=-1, type=float, metavar='WEIGHT',
                         help='let the student model have two outputs and use an MSE loss between the logits with the given weight (default: only have one output)')
     parser.add_argument('--checkpoint-epochs', default=1, type=int,
@@ -83,6 +85,9 @@ def create_parser():
                         help='evaluate model on evaluation set')
     parser.add_argument('--pretrained', dest='pretrained', action='store_true',
                         help='use pre-trained model')
+    parser.add_argument('--ema-loss', default=0.0, type=float, metavar='EMALOSS',
+                        help='loss moving average of competitive-buddy, set 0 to close it')
+    
     return parser
 
 
