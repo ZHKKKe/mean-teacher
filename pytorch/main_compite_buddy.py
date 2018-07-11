@@ -269,7 +269,7 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, epoch,
 
     # calculate epoch initial ema loss values
     l_ema_loss, r_ema_loss = 0, 0
-    if arg.ema_loss != 0:
+    if args.ema_loss != 0:
         l_ema_loss, r_ema_loss = calculate_train_ema_loss(train_loader, l_model, r_model)
 
     end = time.time()
