@@ -9,6 +9,7 @@ from mean_teacher.cb_model import CBModel
 from mean_teacher import minibatching
 
 LOG = logging.getLogger('main')
+
 # fh = logging.FileHandler('/home/sensetime/Desktop/cb_log.log')
 # LOG.addHandler(fh)
 
@@ -21,6 +22,7 @@ def parameters():
         'data_seed': 2000
     }
 
+
 def model_hyperparameters(model_type, n_labeled):
     return {
         'n_labeled_per_batch': 'vary',
@@ -30,17 +32,24 @@ def model_hyperparameters(model_type, n_labeled):
         'ema_scale': 0.5,
     }
 
+
 def run(test_phase, n_labeled, data_seed, model_type):
     minibatch_size = 100
     hyperparams = model_hyperparameters(model_type, n_labeled)
 
     tf.reset_default_graph()
     cb_model = CBModel(RunContext(__file__, data_seed))
-    cifar = Cifar10ZCA(n_labeled=n_labeled, data_seed=data_seed, test_phase=test_phase)
+    cifar = Cifar10ZCA(
+        n_labeled=n_labeled, data_seed=data_seed, test_phase=test_phase)
 
     cb_model['h_flip'] = True
     cb_model['ema_loss'] = hyperparams['ema_loss']
     cb_model['ema_scale'] = hyperparams['ema_scale']
+    # EMA LOSS SETTING ----------------------------
+    cb_model['ema_max'] = 0.9
+    cb_model['ema_line_rampup'] = True
+    # ---------------------------------------------
+
     cb_model['max_consistency_cost'] = hyperparams['max_consistency_cost']
     cb_model['labeled_consistency'] = hyperparams['labeled_consistency']
     cb_model['adam_beta2_during_rampup'] = 0.999

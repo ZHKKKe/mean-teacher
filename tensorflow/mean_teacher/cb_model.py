@@ -26,6 +26,16 @@ def train_control(global_step, print_span, evaluation_span, max_step, name=None)
             "time_to_stop": tf.greater_equal(global_step, max_step),
         }
 
+def line_rampup(global_step, rampup_steps):
+    def ramp():
+        phase = tf.maximum(0.0, global_step) / tf.to_float(rampup_steps)
+        return phase
+
+    global_step = tf.to_float(global_step)
+    rampup_steps = tf.to_float(rampup_steps)
+
+    result = tf.cond(global_step < rampup_steps, ramp, lambda: tf.constant(1.0))
+    return tf.identity(result, name='line_rampup')
 
 def step_rampup(global_step, rampup_length):
     result = tf.cond(global_step < rampup_length, lambda: tf.constant(0.0),
@@ -251,11 +261,16 @@ class CBModel:
         'cons_trust': 0.0,      # not use
         'labeled_consistency': True,
         'num_logits': 1,  # Either 1 or 2
+        'line_up_cons': False,
 
         # Ema loss hyperparameters
         'ema_loss': True,
         'ema_scale': 0.5,
+        'ema_max': 0.9,
         'ema_init_batches': 500,
+        'ema_line_rampup': False,
+        'epoch_ema_init': False,
+
 
         # Training schedule
         'rampup_steps': 40000,
@@ -306,14 +321,25 @@ class CBModel:
             step_up = step_rampup(self.global_step, self.hyper['rampup_steps'])
             sig_up = sigmoid_rampup(self.global_step, self.hyper['rampup_steps'])
             sig_down = sigmoid_rampdown(self.global_step, self.hyper['rampdown_steps'], self.hyper['training_steps'])
+            line_up = line_rampup(self.global_step, self.hyper['rampup_steps'])
 
             self.learn_rate = tf.multiply(sig_up * sig_down, self.hyper['max_lr'], name='learn_rate')
-            self.cons_scale = tf.multiply(sig_up, self.hyper['max_consistency_cost'], name='cons_scale')
+            self.cons_scale = tf.cond(self.hyper['line_up_cons'],
+                                      lambda: tf.multiply(line_up, self.hyper['max_consistency_cost'], name='cons_scale'),
+                                      lambda: tf.multiply(sig_up, self.hyper['max_consistency_cost'], name='cons_scale'))
+
             self.adam_beta1 = tf.add(sig_down * self.hyper['adam_beta1_before_rampdown'],
                                      (1 - sig_down) * self.hyper['adam_beta1_after_rampdown'], name='adam_beta1')
             self.adam_beta2 = tf.add((1 - step_up) * self.hyper['adam_beta2_during_rampup'],
                                      step_up * self.hyper['adam_beta2_after_rampup'], name='adam_beta2')
-            # TODO: add ema_loss rampup?
+
+            # add ema_loss rampup
+            bias = tf.subtract(self.hyper['ema_max'], self.hyper['ema_scale'])
+            up_ema_loss_scale = tf.add(self.hyper['ema_scale'], tf.multiply(line_up, bias))
+            self.ema_scale = tf.cond(self.hyper['ema_line_rampup'],
+                                     lambda: up_ema_loss_scale,
+                                     lambda: self.hyper['ema_scale'])
+
 
         # build networks
         logits_l, logits_r = inference(inputs=self.images,
@@ -347,15 +373,14 @@ class CBModel:
                 self.cons_scale, cons_mask, self.hyper['cons_trust'], name='cons_loss_r')
 
             # update ema loss
-            ema_scale = self.hyper['ema_scale']
             self.ema_loss_l = tf.cond(self.hyper['ema_loss'],
-                                      lambda: tf.add(tf.multiply(ema_scale, self.ema_loss_l),
-                                       tf.multiply(1 - ema_scale, self.mean_class_loss_l)),
+                                      lambda: tf.add(tf.multiply(self.ema_scale, self.ema_loss_l),
+                                       tf.multiply(1 - self.ema_scale, self.mean_class_loss_l)),
                                        lambda: self.mean_class_loss_l)
 
             self.ema_loss_r = tf.cond(self.hyper['ema_loss'],
-                                    lambda: tf.add(tf.multiply(ema_scale, self.ema_loss_r),
-                                       tf.multiply(1 - ema_scale, self.mean_class_loss_r)),
+                                    lambda: tf.add(tf.multiply(self.ema_scale, self.ema_loss_r),
+                                       tf.multiply(1 - self.ema_scale, self.mean_class_loss_r)),
                                       lambda: self.mean_class_loss_r)
 
             # total loss
@@ -488,22 +513,52 @@ class CBModel:
         self.save_checkpoint()
 
         # init ema_loss
-        self.init_ema_loss(train_batches, init_batches=self.run(self.hyper['ema_init_batches']))
+        # self.init_ema_loss(train_batches, init_batches=self.run(self.hyper['ema_init_batches']))
+        self.run(self.ema_loss_init_op)
+
+        init_idx = 0
+        is_init_ema = True
+        init_batches = self.run(self.hyper['ema_init_batches'])
+        epoch_ema_init = self.run(self.hyper['epoch_ema_init'])
 
         for batch in train_batches:
-            results, _, _ = self.run(
-                [self.train_metrics, self.train_step_op_l, self.train_step_op_r], self.feed_dict(batch))
+            if is_init_ema:
+                if init_idx >= init_batches:
+                    results = self.run(self.ema_loss_values)
+                    self.run(self.ema_loss_l_set, {self.ema_loss_l_in: results['ema_loss_l']})
+                    self.run(self.ema_loss_r_set, {self.ema_loss_r_in: results['ema_loss_r']})
 
-            step_control = self.get_train_control()
-            self.training_log.record(step_control['step'], {**results, **step_control})
+                    init_idx = 0
+                    is_init_ema = False
+                    LOG.info('Finish ema loss init.')
+                else:
+                    if init_idx == 0:
+                        LOG.info('Init ema loss...')
 
-            if step_control['time_to_print']:
-                LOG.info("step %5d: %s", step_control['step'], self.result_formatter.format_dict(results))
-            if step_control['time_to_evaluate']:
-                self.evaluate(eval_batches_fn)
-                self.save_checkpoint()
-            if step_control['time_to_stop']:
-                break
+                    self.run(self.init_ema_loss_op, feed_dict=self.feed_dict(batch, is_training=False))
+                    init_idx += 1
+
+                    if init_idx % self.run(self.hyper['print_span']) == 0:
+                        results = self.run(self.ema_loss_values)
+                        LOG.info('idx: %d , ema_loss_l: %f , ema_loss_r: %f' % (init_idx, results['ema_loss_l'], results['ema_loss_r']))
+
+            if not is_init_ema:
+                results, _, _ = self.run(
+                    [self.train_metrics, self.train_step_op_l, self.train_step_op_r], self.feed_dict(batch))
+
+                step_control = self.get_train_control()
+                self.training_log.record(step_control['step'], {**results, **step_control})
+
+                if step_control['time_to_print']:
+                    LOG.info("step %5d: %s", step_control['step'], self.result_formatter.format_dict(results))
+                if step_control['time_to_evaluate']:
+                    self.evaluate(eval_batches_fn)
+                    self.save_checkpoint()
+                    if epoch_ema_init:
+                        is_init_ema = True
+                if step_control['time_to_stop']:
+                    break
+
         self.evaluate(eval_batches_fn)
         self.save_checkpoint()
 

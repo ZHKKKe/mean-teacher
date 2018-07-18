@@ -40,7 +40,32 @@ def calculate_cos_lr(epochs, steps, max_lr, lr_rampdown_epochs=None, lr_rampup=0
     data = [key, value]
     return data
 
-def draw_lr(name, legend, data):
+def sigmoid_up(total_steps):
+    import math
+    key = []
+    value = []
+    for step in range(0, total_steps):
+        x = 1.0 - max(0.0, step) / total_steps
+        x = math.exp(-5.0 * x * x)
+        key.append(step)
+        value.append(x)
+    data = [key, value]
+    return data
+
+def line_up(total_steps):
+    import math
+    key = []
+    value = []
+    for step in range(0, total_steps):
+        x = max(0.0, step) / total_steps
+        # x = math.exp(-5.0 * x * x)
+        key.append(step)
+        value.append(x)
+    data = [key, value]
+    return data
+
+
+def draw(name, legend, data):
     assert len(legend) == len(data)
 
     plt.title(name)
@@ -57,21 +82,34 @@ def draw_lr(name, legend, data):
     plt.show()
 
 if __name__ == '__main__':
-    configs = [
-        {'legend': 'mt4000', 'epochs': 300, 'steps': 474, 'max_lr': 0.05 * 1, 
-        'lr_rampdown_epochs': 350, 'lr_rampup': 0, 'init_lr': 0, 'cos_scale': 0.5},
-    ]
+    # configs = [
+    #     {'legend': 'mt4000', 'epochs': 300, 'steps': 474, 'max_lr': 0.05 * 1,
+    #     'lr_rampdown_epochs': 350, 'lr_rampup': 0, 'init_lr': 0, 'cos_scale': 0.5},
+    # ]
 
+
+    # data = []
+    # legend = []
+    # for config in configs:
+    #     data.append(calculate_cos_lr(config['epochs'], config['steps'], config['max_lr'],
+    #                 config['lr_rampdown_epochs'], config['lr_rampup'], config['init_lr'], config['cos_scale']))
+    #     legend.append(config['legend'])
+
+    # draw('lr_draw', legend, data)
+
+    configs = [
+        {'legend': 'sigmoid_up', 'total_steps': 40000},
+        {'legend': 'line_up', 'total_steps': 40000},
+    ]
 
     data = []
     legend = []
     for config in configs:
-        data.append(calculate_cos_lr(config['epochs'], config['steps'], config['max_lr'], 
-                    config['lr_rampdown_epochs'], config['lr_rampup'], config['init_lr'], config['cos_scale']))
+        if config['legend'] == 'sigmoid_up':
+            data.append(sigmoid_up(config['total_steps']))
+        elif config['legend'] == 'line_up':
+            data.append(line_up(config['total_steps']))
         legend.append(config['legend'])
-
-    draw_lr('lr_draw', legend, data)
-
-
-
-    
+    # print(data)
+    # print(legend)
+    draw('draw', legend, data)

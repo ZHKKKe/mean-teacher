@@ -9,7 +9,7 @@ from mean_teacher.cb_model import CBModel
 from mean_teacher import minibatching
 
 LOG = logging.getLogger('main')
-# fh = logging.FileHandler('/home/sensetime/Desktop/cb_log.log')
+# fh = logging.FileHandler('/home/sensetime/Desktop/cb_reinit_log.log')
 # LOG.addHandler(fh)
 
 
@@ -41,6 +41,10 @@ def run(test_phase, n_labeled, data_seed, model_type):
     cb_model['h_flip'] = True
     cb_model['ema_loss'] = hyperparams['ema_loss']
     cb_model['ema_scale'] = hyperparams['ema_scale']
+     # EMA PARAM ---------------------------
+    cb_model['epoch_ema_init'] = True
+    # --------------------------------------
+
     cb_model['max_consistency_cost'] = hyperparams['max_consistency_cost']
     cb_model['labeled_consistency'] = hyperparams['labeled_consistency']
     cb_model['adam_beta2_during_rampup'] = 0.999

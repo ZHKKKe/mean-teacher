@@ -43,7 +43,13 @@ def run(test_phase, n_labeled, data_seed, model_type):
     cb_model['ema_scale'] = hyperparams['ema_scale']
     cb_model['max_consistency_cost'] = hyperparams['max_consistency_cost']
     cb_model['labeled_consistency'] = hyperparams['labeled_consistency']
+
+    # Default Adam Setting-------------------------------------------------
     cb_model['adam_beta2_during_rampup'] = 0.999
+    cb_model['adam_beta1_after_rampdown'] = 0.9
+    cb_model['max_lr'] = 0.001
+    # ---------------------------------------------------------------------
+
     cb_model['normalize_input'] = False  # Keep ZCA information
     cb_model['rampdown_steps'] = 25000
     cb_model['training_steps'] = 150000
