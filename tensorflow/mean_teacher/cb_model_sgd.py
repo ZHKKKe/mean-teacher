@@ -439,12 +439,12 @@ class CBModel:
                                                         self.global_step,
                                                         learn_rate=self.learn_rate,
                                                         momentum=self.hyper['momentum'],
-                                                        use_nesterov=self.hyper['use_nesterov'])
+                                                        use_nesterov=True)
                 self.train_step_op_r = nn.sgd_optimizer(self.mean_loss_r,
                                                         self.global_step2,
                                                         learn_rate=self.learn_rate,
                                                         momentum=self.hyper['momentum'],
-                                                        use_nesterov=self.hyper['use_nesterov'])
+                                                        use_nesterov=True)
 
         self.train_control = train_control(self.global_step, self.hyper['print_span'],
                                            self.hyper['evaluation_span'], self.hyper['training_steps'])

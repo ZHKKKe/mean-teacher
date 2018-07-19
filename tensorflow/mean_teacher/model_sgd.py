@@ -190,7 +190,7 @@ class Model:
                                                       self.global_step,
                                                       learn_rate=self.learning_rate,
                                                       momentum=self.hyper['momentum'],
-                                                      use_nesterov=self.hyper['use_nesterov'])
+                                                      use_nesterov=True)
 
         self.training_control = training_control(self.global_step,
                                                  self.hyper['print_span'],
