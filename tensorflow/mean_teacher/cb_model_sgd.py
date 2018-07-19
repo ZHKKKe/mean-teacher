@@ -68,6 +68,17 @@ def sigmoid_rampdown(global_step, rampdown_length, training_length):
                      ramp, lambda: tf.constant(1.0))
     return tf.identity(result, name="sigmoid_rampdown")
 
+def cosine_rampdown(global_step, rampdown_step, epoch_step):
+    def ramp():
+        phase = tf.multiply(tf.constant(3.141592658), global_step / rampdown_step)
+        return tf.multiply(tf.constant(0.5), tf.add(tf.cos(phase), tf.constant(1.0)))
+
+    global_step = tf.to_float(global_step)
+    rampdown_step = tf.to_float(rampdown_step)
+
+    result = tf.cond(global_step <= rampdown_step,
+                     ramp, lambda:tf.constant(1.0))
+    return tf.identity(result, name='cosine_rampdown')
 
 def errors(logits, labels, name=None):
     """Compute error mean and whether each unlabeled example is erroneous
@@ -166,6 +177,10 @@ def total_costs(*all_costs, name=None):
         mean_cost = tf.reduce_mean(costs, name=scope)
         return mean_cost, costs
 
+def tower_n(inputs, is_training, dropout_prob, input_noise, normalize_input,
+            h_flip, translate, num_logits, is_init=False, name=None):
+            pass
+
 def tower(inputs, is_training, dropout_prob, input_noise, normalize_input,
           h_flip, translate, num_logits, is_init=False, name=None):
     with tf.name_scope(name, "tower"):
@@ -249,12 +264,16 @@ class CBModel:
         'dropout_prob': 0.5,
 
         # Optimizer hyperparameters
-        'max_lr': 0.003,
+        # 'max_lr': 0.003,
         'adam_beta1_before_rampdown': 0.9,
         'adam_beta1_after_rampdown': 0.5,
         'adam_beta2_during_rampup': 0.99,
         'adam_beta2_after_rampup': 0.999,
-        'adam_epsilon': 1e-8,
+        # 'adam_epsilon': 1e-8,
+        'max_lr': 0.05,
+        'momentum': 0.9,
+        'use_nesterov': True,
+        'lr_down_iters': 175000,
 
         # Consistency hyperparameters
         'max_consistency_cost': 100.0,
@@ -321,8 +340,11 @@ class CBModel:
             sig_up = sigmoid_rampup(self.global_step, self.hyper['rampup_steps'])
             sig_down = sigmoid_rampdown(self.global_step, self.hyper['rampdown_steps'], self.hyper['training_steps'])
             line_up = line_rampup(self.global_step, self.hyper['rampup_steps'])
+            cos_down = cosine_rampdown(self.global_step, self.hyper['lr_down_iters'], tf.constant(500))
 
-            self.learn_rate = tf.multiply(sig_up * sig_down, self.hyper['max_lr'], name='learn_rate')
+            # self.learn_rate = tf.multiply(sig_up * sig_down, self.hyper['max_lr'], name='learn_rate')
+            self.learn_rate = tf.multiply(cos_down, self.hyper['max_lr'], name='learn_rate')
+
             self.cons_scale = tf.cond(self.hyper['line_up_cons'],
                                       lambda: tf.multiply(line_up, self.hyper['max_consistency_cost'], name='cons_scale'),
                                       lambda: tf.multiply(sig_up, self.hyper['max_consistency_cost'], name='cons_scale'))
@@ -399,19 +421,30 @@ class CBModel:
         with tf.name_scope('train_step'):
             update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
             with tf.control_dependencies(update_ops):
+                LOG.info('SGD_CB_MODEL')
                 # Note: just update self.global_step in l_model
-                self.train_step_op_l = nn.adam_optimizer(self.mean_loss_l,
-                                                         self.global_step,
-                                                         learning_rate=self.learn_rate,
-                                                         beta1=self.adam_beta1,
-                                                         beta2=self.adam_beta2,
-                                                         epsilon=self.hyper['adam_epsilon'])
-                self.train_step_op_r = nn.adam_optimizer(self.mean_loss_r,
-                                                         self.global_step2,
-                                                         learning_rate=self.learn_rate,
-                                                         beta1=self.adam_beta1,
-                                                         beta2=self.adam_beta2,
-                                                         epsilon=self.hyper['adam_epsilon'])
+                # self.train_step_op_l = nn.adam_optimizer(self.mean_loss_l,
+                #                                          self.global_step,
+                #                                          learning_rate=self.learn_rate,
+                #                                          beta1=self.adam_beta1,
+                #                                          beta2=self.adam_beta2,
+                #                                          epsilon=self.hyper['adam_epsilon'])
+                # self.train_step_op_r = nn.adam_optimizer(self.mean_loss_r,
+                #                                          self.global_step2,
+                #                                          learning_rate=self.learn_rate,
+                #                                          beta1=self.adam_beta1,
+                #                                          beta2=self.adam_beta2,
+                #                                          epsilon=self.hyper['adam_epsilon'])
+                self.train_step_op_l = nn.sgd_optimizer(self.mean_loss_l,
+                                                        self.global_step,
+                                                        learn_rate=self.learn_rate,
+                                                        momentum=self.hyper['momentum'],
+                                                        use_nesterov=self.hyper['use_nesterov'])
+                self.train_step_op_r = nn.sgd_optimizer(self.mean_loss_r,
+                                                        self.global_step2,
+                                                        learn_rate=self.learn_rate,
+                                                        momentum=self.hyper['momentum'],
+                                                        use_nesterov=self.hyper['use_nesterov'])
 
         self.train_control = train_control(self.global_step, self.hyper['print_span'],
                                            self.hyper['evaluation_span'], self.hyper['training_steps'])

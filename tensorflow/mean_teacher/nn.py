@@ -166,3 +166,10 @@ def adam_optimizer(cost, global_step,
                                            beta2=beta2,
                                            epsilon=epsilon)
         return optimizer.minimize(cost, global_step=global_step, name=scope)
+
+def sgd_optimizer(cost, global_step, learn_rate, momentum, use_nesterov=False, name=None):
+    with tf.name_scope(name, 'sgd_optimizer') as scope:
+        optimizer = tf.train.MomentumOptimizer(learn_rate=learn_rate, 
+                                               momentum=momentum,
+                                               use_nesterov=use_nesterov)
+        return optimizer.minimize(cost, global_step=global_step, name=scope)       
