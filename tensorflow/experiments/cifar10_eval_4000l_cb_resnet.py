@@ -23,8 +23,8 @@ def parameters():
 
 def model_hyperparameters(model_type, n_labeled):
     return {
-        'minibatch_size': 128,
-        'n_labeled_per_batch': 31,
+        'minibatch_size': 100,
+        'n_labeled_per_batch': 'vary',
     }
 
 def run(test_phase, n_labeled, data_seed, model_type):
@@ -44,7 +44,7 @@ def run(test_phase, n_labeled, data_seed, model_type):
 
     cb_model['ema_loss'] = True
     cb_model['ema_scale'] = 0.5
-    cb_model['ema_init_batches'] = 474
+    cb_model['ema_init_batches'] = 500
     cb_model['epoch_ema_init'] = False
 
     cb_model['lr_down_iters'] = 175000
@@ -52,7 +52,7 @@ def run(test_phase, n_labeled, data_seed, model_type):
     cb_model['training_steps'] = 150000
 
     cb_model['print_span'] = 50
-    cb_model['evaluation_span'] = 474
+    cb_model['evaluation_span'] = 500
 
     training_batches = minibatching.training_batches(
         cifar.training, hyperparams['minibatch_size'], hyperparams['n_labeled_per_batch'])

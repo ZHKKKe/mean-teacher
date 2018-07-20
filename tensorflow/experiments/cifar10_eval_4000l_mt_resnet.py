@@ -13,7 +13,7 @@ from experiments.run_context import RunContext
 import tensorflow as tf
 
 from datasets import Cifar10ZCA
-from mean_teacher.model_sgd import Model
+from mean_teacher.model_resnet import Model
 from mean_teacher import minibatching
 
 LOG = logging.getLogger('main')
@@ -30,8 +30,8 @@ def parameters():
 
 def model_hyperparameters(model_type, n_labeled):
     return {
-        'minibatch_size': 128,
-        'n_labeled_per_batch': 31,
+        'minibatch_size': 100,
+        'n_labeled_per_batch': 'vary',
     }    
 
 def run(test_phase, n_labeled, data_seed, model_type):
@@ -63,7 +63,7 @@ def run(test_phase, n_labeled, data_seed, model_type):
     model['lr_down_iters'] = 175000
 
     model['print_span'] = 50
-    model['evaluation_span'] = 474
+    model['evaluation_span'] = 500
 
     training_batches = minibatching.training_batches(
         cifar.training, hyperparams['minibatch_size'], hyperparams['n_labeled_per_batch'])
