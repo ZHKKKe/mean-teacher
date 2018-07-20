@@ -30,14 +30,11 @@ def parameters():
 
 def model_hyperparameters(model_type, n_labeled):
     return {
-        'n_labeled_per_batch': 'vary',
-        'max_consistency_cost': 100.0 * n_labeled / 50000,
-        'apply_consistency_to_labeled': True,
-        'ema_consistency': model_type == 'mean_teacher'
+        'minibatch_size': 128,
+        'n_labeled_per_batch': 31,
     }    
 
 def run(test_phase, n_labeled, data_seed, model_type):
-    minibatch_size = 100
     hyperparams = model_hyperparameters(model_type, n_labeled)
 
     tf.reset_default_graph()
@@ -47,21 +44,31 @@ def run(test_phase, n_labeled, data_seed, model_type):
         n_labeled=n_labeled, data_seed=data_seed, test_phase=test_phase)
 
     model['flip_horizontally'] = True
-    model['ema_consistency'] = hyperparams['ema_consistency']
-    model['max_consistency_cost'] = hyperparams['max_consistency_cost']
-    model['apply_consistency_to_labeled'] = hyperparams[
-        'apply_consistency_to_labeled']
+    model['normalize_input'] = False  # Keep ZCA information
+    model['max_consistency_cost'] = 100.0
+
+    model['ema_consistency'] = True
+    model['apply_consistency_to_labeled'] = True
         
     # model['adam_beta_2_during_rampup'] = 0.999
     model['ema_decay_during_rampup'] = 0.999
-    model['normalize_input'] = False  # Keep ZCA information
     model['rampdown_length'] = 25000
     model['training_length'] = 150000
+    model['ema_decay_during_rampup'] = 0.99
+    model['ema_decay_after_rampup'] = 0.99
+    model['max_learning_rate'] = 0.05
+
+    model['rampup_length'] = 2500
+    model['training_length'] = 150000
+    model['lr_down_iters'] = 175000
+
+    model['print_span'] = 50
+    model['evaluation_span'] = 474
 
     training_batches = minibatching.training_batches(
-        cifar.training, minibatch_size, hyperparams['n_labeled_per_batch'])
+        cifar.training, hyperparams['minibatch_size'], hyperparams['n_labeled_per_batch'])
     evaluation_batches_fn = minibatching.evaluation_epoch_generator(
-        cifar.evaluation, minibatch_size)
+        cifar.evaluation, hyperparams['minibatch_size'])
 
     tensorboard_dir = model.save_tensorboard_graph()
     LOG.info("Saved tensorboard graph to %r", tensorboard_dir)

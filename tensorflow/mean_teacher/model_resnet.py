@@ -181,7 +181,7 @@ class Model:
         with tf.name_scope("train_step"):
             update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
             with tf.control_dependencies(update_ops):
-                LOG.info('SGD_CB_MODEL')
+                LOG.info('SGD_MT_MODEL')
                 # self.train_step_op = nn.adam_optimizer(self.cost_to_be_minimized,
                 #                                        self.global_step,
                 #                                        learning_rate=self.learning_rate,
@@ -375,15 +375,39 @@ def inference(inputs, is_training, ema_decay, input_noise, student_dropout_proba
                       num_logits=num_logits)
 
     with tf.variable_scope("initialization") as var_scope:
-        _ = tower(**tower_args, dropout_probability=student_dropout_probability, is_initialization=True)
+        _ = tower_resnet(**tower_args, dropout_probability=student_dropout_probability, is_initialization=True)
     with name_variable_scope("primary", var_scope, reuse=True) as (name_scope, _):
-        class_logits_1, cons_logits_1 = tower(**tower_args, dropout_probability=student_dropout_probability, name=name_scope)
+        class_logits_1, cons_logits_1 = tower_resnet(**tower_args, dropout_probability=student_dropout_probability, name=name_scope)
     with name_variable_scope("secondary", var_scope, reuse=True) as (name_scope, _):
-        class_logits_2, cons_logits_2 = tower(**tower_args, dropout_probability=teacher_dropout_probability, name=name_scope)
+        class_logits_2, cons_logits_2 = tower_resnet(**tower_args, dropout_probability=teacher_dropout_probability, name=name_scope)
     with ema_variable_scope("ema", var_scope, decay=ema_decay):
-        class_logits_ema, cons_logits_ema = tower(**tower_args, dropout_probability=teacher_dropout_probability, name=name_scope)
+        class_logits_ema, cons_logits_ema = tower_resnet(**tower_args, dropout_probability=teacher_dropout_probability, name=name_scope)
         class_logits_ema, cons_logits_ema = tf.stop_gradient(class_logits_ema), tf.stop_gradient(cons_logits_ema)
     return (class_logits_1, cons_logits_1), (class_logits_2, cons_logits_2), (class_logits_ema, cons_logits_ema)
+
+
+
+def tower_resnet(inputs, is_training, dropout_probability, input_noise, normalize_input,
+                   flip_horizontally, translate, num_logits, is_initialization=False, name=None):
+    LOG.info('Building ResNet.')
+    from . import resnet_model as resnet
+    with tf.name_scope(name, 'tower_resnet'):
+        training_args = dict(is_training=is_training)
+        training_mode_funcs = [nn.random_translate, nn.flip_randomly, nn.gaussian_noise,
+                               slim.dropout, wn.fully_connected, wn.conv2d]
+
+        with slim.arg_scope(training_mode_funcs, **training_args):
+            x = inputs
+            x = tf.cond(normalize_input, lambda: slim.layer_norm(x, scale=False, center=False, scope='normalize_inputs'), lambda: x)
+            assert_shape(x, [None, 32, 32, 3])
+
+            x = nn.flip_randomly(x, horizontally=flip_horizontally, vertically=False, name='random_flip')
+            x = tf.cond(translate, lambda: nn.random_translate(x, scale=2, name='random_translate'), lambda: x)
+            x = nn.gaussian_noise(x, scale=input_noise, name='gaussian_noise')
+
+            logits_1 = resnet.inference(x, 4, reuse=False)
+            logits_2 = logits_1
+            return logits_1, logits_2
 
 
 def tower(inputs,

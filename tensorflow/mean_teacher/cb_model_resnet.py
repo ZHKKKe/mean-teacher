@@ -179,7 +179,7 @@ def total_costs(*all_costs, name=None):
 
 def tower_resnet(inputs, is_training, dropout_prob, input_noise, normalize_input,
                    h_flip, translate, num_logits, is_init=False, name=None):
-    
+    LOG.info('Building ResNet.')
     from . import resnet_model as resnet
     with tf.name_scope(name, 'tower_resnet'):
         training_args = dict(is_training=is_training)
@@ -195,7 +195,7 @@ def tower_resnet(inputs, is_training, dropout_prob, input_noise, normalize_input
             x = tf.cond(translate, lambda: nn.random_translate(x, scale=2, name='random_translate'), lambda: x)
             x = nn.gaussian_noise(x, scale=input_noise, name='gaussian_noise')
 
-            logits_1 = resnet.inference(x, 5, reuse=False)
+            logits_1 = resnet.inference(x, 4, reuse=False)
             logits_2 = logits_1
             return logits_1, logits_2
 
@@ -261,10 +261,8 @@ def inference(inputs, is_training, input_noise, dropout_prob, normalize_input, h
                       normalize_input=normalize_input, h_flip=h_flip, translate=translate, num_logits=num_logits)
 
     with tf.variable_scope('left'):
-        # class_logits_l, cons_logits_l = tower(**tower_args, is_init=True)
         class_logits_l, cons_logits_l = tower_resnet(**tower_args, is_init=True)
     with tf.variable_scope('right'):
-        # class_logits_r, cons_logits_r = tower(**tower_args, is_init=True)
         class_logits_r, cons_logits_r = tower_resnet(**tower_args, is_init=True)
 
     return (class_logits_l, cons_logits_l), (class_logits_r, cons_logits_r)
