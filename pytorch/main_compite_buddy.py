@@ -393,7 +393,7 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, epoch,
                      'R-EMA {meters[r_ema_loss]:.4f}\t'
                      'L-Class {meters[l_class_loss]:.4f}\t'
                      'R-Class {meters[r_class_loss]:.4f}\t'
-                     'Cons {meters[cons_loss]:.4f}\t'
+                     'Cons {meters[cons_loss]:.6f}\t'
                      'Better {better.sum:.1f}\n'
                      'L-Prec@1 {meters[l_top1]:.3f}\t'
                      'R-Prec@1 {meters[r_top1]:.3f}\t'

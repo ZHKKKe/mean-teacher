@@ -18,6 +18,14 @@ from .utils import export, parameter_count
 
 
 @export
+def cifar_mininet(pretrained=False, **kwargs):
+    assert not pretrained
+    model = MiniNet()
+
+    return model
+
+
+@export
 def cifar_shakeshake26(pretrained=False, **kwargs):
     assert not pretrained
     model = ResNet32x32(ShakeShakeBlock,
@@ -37,6 +45,55 @@ def resnext152(pretrained=False, **kwargs):
                           downsample='basic', **kwargs)
     return model
 
+
+class MiniNet(nn.Module):
+    def __init__(self, num_classes=10):
+        super().__init__()
+
+        self.conv1_1 = nn.Conv2d(3, 128, kernel_size=3, stride=1, padding=1, bias=False)
+        self.conv1_2 = nn.Conv2d(128, 128, kernel_size=3, stride=1, padding=1, bias=False)
+        self.conv1_3 = nn.Conv2d(128, 128, kernel_size=3, stride=1, padding=1, bias=False)
+        
+        self.conv2_1 = nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1, bias=False)
+        self.conv2_2 = nn.Conv2d(256, 256, kernel_size=3, stride=1, padding=1, bias=False)
+        self.conv2_3 = nn.Conv2d(256, 256, kernel_size=3, stride=1, padding=1, bias=False)
+
+        self.conv3_1 = nn.Conv2d(256, 512, kernel_size=3, stride=1, padding=0, bias=False)
+        self.conv3_2 = nn.Conv2d(512, 256, kernel_size=1, stride=1, padding=1, bias=False)
+        self.conv3_3 = nn.Conv2d(256, 128, kernel_size=1, stride=1, padding=1, bias=False)
+
+        self.bn128 = nn.BatchNorm2d(128)
+        self.bn256 = nn.BatchNorm2d(256)
+        self.bn512 = nn.BatchNorm2d(512)
+        
+        self.relu = nn.ReLU(inplace=True)
+        self.dropout = nn.Dropout2d(0.5)
+        self.max_pool = nn.MaxPool2d(2)
+        self.avg_pool = nn.AvgPool2d(6)
+        
+        self.fc1 = nn.Linear(128, num_classes)
+        self.fc2 = nn.Linear(128, num_classes)
+
+    def forward(self, x):
+        x = self.relu(self.bn128(self.conv1_1(x)))
+        x = self.relu(self.bn128(self.conv1_2(x)))
+        x = self.relu(self.bn128(self.conv1_3(x)))
+        x = self.max_pool(x)
+        x = self.dropout(x)
+
+        x = self.relu(self.bn256(self.conv2_1(x)))
+        x = self.relu(self.bn256(self.conv2_2(x)))
+        x = self.relu(self.bn256(self.conv2_3(x)))
+        x = self.max_pool(x)
+        x = self.dropout(x)
+
+        x = self.relu(self.bn512(self.conv3_1(x)))
+        x = self.relu(self.bn256(self.conv3_2(x)))
+        x = self.relu(self.bn128(self.conv3_3(x)))
+        x = self.avg_pool(x)
+        x = x.view(x.size(0), -1)
+
+        return self.fc1(x), self.fc2(x)        
 
 
 class ResNet224x224(nn.Module):

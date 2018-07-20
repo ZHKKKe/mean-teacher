@@ -299,7 +299,7 @@ def train(train_loader, model, ema_model, optimizer, epoch, log):
                 'Batch-T {meters[batch_time]:.3f}\t'
                 'Data-T {meters[data_time]:.3f}\t'
                 'Class {meters[class_loss]:.4f}\t'
-                'Cons {meters[cons_loss]:.4f}\t'
+                'Cons {meters[cons_loss]:.6f}\t'
                 'Prec@1 {meters[top1]:.3f}\t'
                 'Prec@5 {meters[top5]:.3f}\t'
                 'EMA-Prec@1 {meters[top1]:.3f}\t'
