@@ -149,6 +149,7 @@ class Model:
             consistency_mask = tf.logical_or(tf.equal(self.labels, -1), labeled_consistency)
             self.mean_cons_cost_pi, self.cons_costs_pi = consistency_costs(
                 self.cons_logits_1, self.class_logits_2, self.cons_coefficient, consistency_mask, self.hyper['consistency_trust'])
+            
             self.mean_cons_cost_mt, self.cons_costs_mt = consistency_costs(
                 self.cons_logits_1, self.class_logits_ema, self.cons_coefficient, consistency_mask, self.hyper['consistency_trust'])
 
@@ -167,6 +168,7 @@ class Model:
 
             self.mean_total_cost_pi, self.total_costs_pi = total_costs(
                 self.class_costs_1, self.cons_costs_pi)
+            
             self.mean_total_cost_mt, self.total_costs_mt = total_costs(
                 self.class_costs_1, self.cons_costs_mt)
             assert_shape(self.total_costs_pi, [2])

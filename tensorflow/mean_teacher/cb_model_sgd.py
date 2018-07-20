@@ -126,8 +126,8 @@ def classification_costs(logits, labels, name=None):
         return mean, per_sample
 
 def cb_consistency_costs(logits1, logits2, cons_scale, mask, cons_trust, name=None):
-    num_classes = 10
     with tf.name_scope(name, 'cb_consistency_costs') as scope:
+        num_classes = 10
         assert_shape(logits1, [None, num_classes])
         assert_shape(logits2, [None, num_classes])
         assert_shape(cons_scale, [])
@@ -177,9 +177,28 @@ def total_costs(*all_costs, name=None):
         mean_cost = tf.reduce_mean(costs, name=scope)
         return mean_cost, costs
 
-def tower_n(inputs, is_training, dropout_prob, input_noise, normalize_input,
-            h_flip, translate, num_logits, is_init=False, name=None):
-            pass
+def tower_resnet(inputs, is_training, dropout_prob, input_noise, normalize_input,
+                   h_flip, translate, num_logits, is_init=False, name=None):
+    
+    from resnet_model import inference as res_inf
+    with tf.name_scope(name, 'tower_resnet'):
+        training_args = dict(is_training=is_training)
+        training_mode_funcs = [nn.random_translate, nn.flip_randomly, nn.gaussian_noise,
+                               slim.dropout, wn.fully_connected, wn.conv2d]
+
+        with slim.arg_scope(training_mode_funcs, **training_args):
+            x = inputs
+            x = tf.cond(normalize_input, lambda: slim.layer_norm(x, scale=False, center=False, scope='normalize_inputs'), lambda: x)
+            assert_shape(x, [None, 32, 32, 3])
+
+            x = nn.flip_randomly(x, horizontally=h_flip, vertically=False, name='random_flip')
+            x = tf.cond(translate, lambda: nn.random_translate(x, scale=2, name='random_translate'), lambda: x)
+            x = nn.gaussian_noise(x, scale=input_noise, name='gaussian_noise')
+
+            logits_1 = res_inf(x, 5, reuse=False)
+            logits_2 = logits_1
+            return logits_1, logits_2
+
 
 def tower(inputs, is_training, dropout_prob, input_noise, normalize_input,
           h_flip, translate, num_logits, is_init=False, name=None):
@@ -242,9 +261,11 @@ def inference(inputs, is_training, input_noise, dropout_prob, normalize_input, h
                       normalize_input=normalize_input, h_flip=h_flip, translate=translate, num_logits=num_logits)
 
     with tf.variable_scope('left'):
-        class_logits_l, cons_logits_l = tower(**tower_args, is_init=True)
+        # class_logits_l, cons_logits_l = tower(**tower_args, is_init=True)
+        class_logits_l, cons_logits_l = tower_resnet(**tower_args, is_init=True)
     with tf.variable_scope('right'):
-        class_logits_r, cons_logits_r = tower(**tower_args, is_init=True)
+        # class_logits_r, cons_logits_r = tower(**tower_args, is_init=True)
+        class_logits_r, cons_logits_r = tower_resnet(**tower_args, is_init=True)
 
     return (class_logits_l, cons_logits_l), (class_logits_r, cons_logits_r)
 
