@@ -21,27 +21,27 @@ def parameters():
         'eval_subdir': 'test',
 
         # Data sampling
-        'base_batch_size': 128,
-        'base_labeled_batch_size': 31,
+        'base_batch_size': 100,
+        'base_labeled_batch_size': 50,
 
         # Architecture
-        'arch': 'cifar_mininet',
+        'arch': 'cifar_cnn13',
 
         # Costs
         'consistency_type': 'mse',
-        'consistency_rampup': 80,
-        'consistency': 8.0,
-        # 'consistency_rampup_exp': -2.0,
+        'consistency_rampup': 5,
+        'consistency': 100.0,
         'logit_distance_cost': -1,
-        'weight_decay': 2e-4,
+        'weight_decay': 1e-4,
 
         # Optimization
         'lr_rampup': 0,
-        'base_lr': 0.003,
+        'base_lr': 0.1,
         'nesterov': True,
 
-        # EMA loss
+        # EMA loss competition
         'ema_loss': 0.5,
+        'epoch_init_ema_loss': False, 
     }
 
     # 4000 labels:
@@ -51,8 +51,8 @@ def parameters():
             'title': '4000-label cifar10 cb',
             'n_labels': 4000,
             'data_seed': data_seed,
-            'epochs': 300,
-            'lr_rampdown_epochs': 350,
+            'epochs': 180,
+            'lr_rampdown_epochs': 210,
         }
 
 def run(title, base_batch_size, base_labeled_batch_size, base_lr, n_labels, data_seed, **kwargs):

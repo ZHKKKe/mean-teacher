@@ -31,7 +31,6 @@ def parameters():
         'consistency_type': 'mse',
         'consistency_rampup': 100,
         'consistency': 100.0,
-        # 'consistency_rampup_exp': -2.0,
         'logit_distance_cost': -1,
         'weight_decay': 2e-4,
 
@@ -41,7 +40,9 @@ def parameters():
         'nesterov': True,
 
         # EMA loss competition
-        'ema_loss': 0.9,
+        'ema_loss': 0.5,
+        'epoch_init_ema_loss': True, 
+        
     }
 
     # 4000 labels:

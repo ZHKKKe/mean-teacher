@@ -27,6 +27,9 @@ args = None
 best_prec1 = 0
 global_step = 0
 
+l_ema_loss = 0
+r_ema_loss = 0
+
 
 def create_compite_model(side, num_classes):
     LOG.info('=> creating {pretrained} {side} model: {arch}'.format(
@@ -239,6 +242,8 @@ def calculate_train_ema_loss(train_loader, l_model, r_model):
 
 def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, epoch, log):
     global global_step
+    global l_ema_loss
+    global r_ema_loss
 
     def sigmoid_rampup_ke(current, rampup_length, exp_scale):
         """Exponential rampup from https://arxiv.org/abs/1610.02242"""
@@ -265,8 +270,7 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, epoch,
     meters = AverageMeterSet()
 
     # calculate epoch initial ema loss values
-    l_ema_loss, r_ema_loss = 0, 0
-    if args.ema_loss != 0:
+    if epoch != 0 and args.epoch_init_ema_loss:
         l_ema_loss, r_ema_loss = calculate_train_ema_loss(train_loader, l_model, r_model)
 
     l_model.train()
@@ -388,13 +392,13 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, epoch,
         if i % args.print_freq == 0:
             LOG.info('Epoch: [{0}][{1}/{2}]\t'
                      'Batch-T {meters[batch_time]:.3f}\t'
-                     'Data-T {meters[data_time]:.3f}\t'
+                    #  'Data-T {meters[data_time]:.3f}\t'
                      'L-EMA {meters[l_ema_loss]:.4f}\t'
                      'R-EMA {meters[r_ema_loss]:.4f}\t'
                      'L-Class {meters[l_class_loss]:.4f}\t'
                      'R-Class {meters[r_class_loss]:.4f}\t'
-                     'Cons {meters[cons_loss]:.6f}\t'
-                     'Better {better.sum:.1f}\n'
+                     'Cons {meters[cons_loss]:.4f}\t'
+                     'Better-M {better.sum:.1f}\n'
                      'L-Prec@1 {meters[l_top1]:.3f}\t'
                      'R-Prec@1 {meters[r_top1]:.3f}\t'
                      'L-Prec@5 {meters[l_top5]:.3f}\t'
@@ -410,6 +414,8 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, epoch,
 def main(context):
     global best_prec1
     global global_step
+    global l_ema_loss
+    global r_ema_loss
 
     checkpoint_path = context.transient_dir
     training_log = context.create_train_log('training')
@@ -459,6 +465,8 @@ def main(context):
         LOG.info('Evaluating the right model: ')
         validate(eval_loader, r_model, r_validation_log, global_step, args.start_epoch)
         return
+
+    l_ema_loss, r_ema_loss = calculate_train_ema_loss(train_loader, l_model, r_model)
 
     for epoch in range(args.start_epoch, args.epochs):
         start_time = time.time()

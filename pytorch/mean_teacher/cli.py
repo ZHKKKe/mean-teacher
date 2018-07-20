@@ -87,6 +87,8 @@ def create_parser():
                         help='use pre-trained model')
     parser.add_argument('--ema-loss', default=0.0, type=float, metavar='EMALOSS',
                         help='loss moving average of competitive-buddy, set 0 to close it')
+    parser.add_argument('--epoch-init-ema-loss', default=True, type=str2bool, metavar='BOOL',
+                        help='')
     
     return parser
 
