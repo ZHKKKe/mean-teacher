@@ -180,7 +180,7 @@ def total_costs(*all_costs, name=None):
 def tower_resnet(inputs, is_training, dropout_prob, input_noise, normalize_input,
                    h_flip, translate, num_logits, is_init=False, name=None):
     
-    from resnet_model import inference as res_inf
+    from . import resnet_model as resnet
     with tf.name_scope(name, 'tower_resnet'):
         training_args = dict(is_training=is_training)
         training_mode_funcs = [nn.random_translate, nn.flip_randomly, nn.gaussian_noise,
@@ -195,7 +195,7 @@ def tower_resnet(inputs, is_training, dropout_prob, input_noise, normalize_input
             x = tf.cond(translate, lambda: nn.random_translate(x, scale=2, name='random_translate'), lambda: x)
             x = nn.gaussian_noise(x, scale=input_noise, name='gaussian_noise')
 
-            logits_1 = res_inf(x, 5, reuse=False)
+            logits_1 = resnet.inference(x, 5, reuse=False)
             logits_2 = logits_1
             return logits_1, logits_2
 
