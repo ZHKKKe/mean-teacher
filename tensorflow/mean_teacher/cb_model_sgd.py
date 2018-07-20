@@ -313,7 +313,7 @@ class CBModel:
 
 
         # Training schedule
-        'rampup_steps': 40000,
+        'rampup_steps': 50000,
         'rampdown_steps': 25000,
         'training_steps': 150000,
 

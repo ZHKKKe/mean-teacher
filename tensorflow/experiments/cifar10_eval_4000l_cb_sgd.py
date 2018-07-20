@@ -23,15 +23,15 @@ def parameters():
 
 def model_hyperparameters(model_type, n_labeled):
     return {
-        'n_labeled_per_batch': 'vary',
-        'max_consistency_cost': 100.0 * n_labeled / 50000,
+        'n_labeled_per_batch': 31,
+        'max_consistency_cost': 100.0,
         'labeled_consistency': True,
         'ema_loss': True,
         'ema_scale': 0.5,
     }
 
 def run(test_phase, n_labeled, data_seed, model_type):
-    minibatch_size = 100
+    minibatch_size = 128
     hyperparams = model_hyperparameters(model_type, n_labeled)
 
     tf.reset_default_graph()
@@ -41,6 +41,7 @@ def run(test_phase, n_labeled, data_seed, model_type):
     cb_model['h_flip'] = True
     cb_model['ema_loss'] = hyperparams['ema_loss']
     cb_model['ema_scale'] = hyperparams['ema_scale']
+    cb_model['epoch_ema_init'] = True
     cb_model['max_consistency_cost'] = hyperparams['max_consistency_cost']
     cb_model['labeled_consistency'] = hyperparams['labeled_consistency']
     # cb_model['adam_beta2_during_rampup'] = 0.999
