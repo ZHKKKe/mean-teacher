@@ -38,14 +38,13 @@ def parameters():
         'lr_rampup': 0,
         'base_lr': 0.1,
         'nesterov': True,
-        'disc_lr': 0.1,
-        'disc_lr_rampup': 5,
+        'disc_lr': 0.0001,
+        # 'disc_lr_rampup': 5,
 
         # EMA loss competition
         'ema_loss': 0.5,
         'epoch_init_ema_loss': False, 
 
-        'print_freq': 50,
     }
 
     # 4000 labels:

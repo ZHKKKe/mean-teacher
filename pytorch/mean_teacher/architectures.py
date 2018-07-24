@@ -464,15 +464,18 @@ class CNN13_K(nn.Module):
 
         elif mode == 'discriminator':
             assert bs == lbs * 2
-            z = self.conv.forward(x)
+            x = x.split(lbs)
+            
+            z_unlabeled = self.conv.forward(x[0])
+            z_labeled = self.conv.forward(x[1])
 
-            z_unlabeled = z.split(lbs)[0]  # fake
-            z_labeled = z.split(lbs)[1]    # real
+            # z_unlabeled = z.split(lbs)[0]  # fake
+            # z_labeled = z.split(lbs)[1]    # real
 
             d_unlabeled = self.disc(z_unlabeled)
             d_labeled = self.disc(z_labeled)
 
-            return d_unlabeled, d_labeled
+            return d_unlabeled, d_labeled, z_unlabeled, z_labeled
 
         elif mode == 'generator':
             assert bs == lbs * 2

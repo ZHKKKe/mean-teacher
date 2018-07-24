@@ -408,23 +408,23 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, l_disc
         if args.arch == 'cifar_cnn13_k':
             adjust_disc_learning_rate(l_disc_optim, epoch, i, len(train_loader))
             adjust_disc_learning_rate(r_disc_optim, epoch, i, len(train_loader))
-            l_model.zero_grad()
-            r_model.zero_grad()
 
             # fake, real
-            l_unlabeled_out, l_labeled_out = l_model(l_input_var, mode='discriminator', bs=minibatch_size, lbs=labeled_minibatch_size)
-            r_unlabeled_out, r_labeled_out = r_model(r_input_var, mode='discriminator', bs=minibatch_size, lbs=labeled_minibatch_size)
+            l_unlabeled_out, l_labeled_out, l_z_u, l_z = l_model(l_input_var, mode='discriminator', bs=minibatch_size, lbs=labeled_minibatch_size)
+            r_unlabeled_out, r_labeled_out, z_u, z = r_model(r_input_var, mode='discriminator', bs=minibatch_size, lbs=labeled_minibatch_size)
 
             tiny = 1e-15
-            l_disc_loss = (-torch.mean(torch.log(l_labeled_out + tiny) + torch.log(1 - l_unlabeled_out + tiny))) / minibatch_size
-            r_disc_loss = (-torch.mean(torch.log(r_labeled_out + tiny) + torch.log(1 - r_unlabeled_out + tiny))) / minibatch_size
+            l_disc_loss = -torch.mean(torch.log(l_labeled_out + tiny) + torch.log(1 - l_unlabeled_out + tiny))
+            r_disc_loss = -torch.mean(torch.log(r_labeled_out + tiny) + torch.log(1 - r_unlabeled_out + tiny))
 
             if i % args.print_freq == 0:
                 LOG.info('l_unlabeled: {0}'.format(list(l_unlabeled_out.data.cpu().numpy().tolist())[:5]))
                 LOG.info('l_labeled: {0}'.format(list(l_labeled_out.data.cpu().numpy().tolist())[:5]))
                 LOG.info('r_unlabeled: {0}'.format(list(r_unlabeled_out.data.cpu().numpy().tolist())[:5]))
                 LOG.info('r_labeled: {0}'.format(list(r_labeled_out.data.cpu().numpy().tolist())[:5]))
-
+                LOG.info('unlabeled_d: {0}'.format(list(z_u.data.cpu().numpy().tolist())[0][0]))
+                LOG.info('labeled_d: {0}'.format(list(z.data.cpu().numpy().tolist())[0][0]))
+    
             meters.update('l_disc_loss', l_disc_loss.data[0])
             meters.update('r_disc_loss', r_disc_loss.data[0])
 
@@ -457,7 +457,7 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, l_disc
                      'L-DISC {meters[l_disc_loss]:.4f}\t'
                      'R-DISC {meters[r_disc_loss]:.4f}'.format(
                      epoch, i, len(train_loader), meters=meters, better=meters['better_model']))
-                LOG.info('\n')
+            LOG.info('\n')
 
             # if args.arch == 'cifar_cnn13_k':
             # LOG.info('L-DISC' {})
