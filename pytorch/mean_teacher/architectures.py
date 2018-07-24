@@ -8,6 +8,7 @@
 import sys
 import math
 import itertools
+import logging
 
 import torch
 from torch import nn
@@ -15,6 +16,7 @@ from torch.nn import functional as F
 from torch.autograd import Variable, Function
 
 from .utils import export, parameter_count
+LOG = logging.getLogger('main')
 
 
 @export
@@ -42,6 +44,13 @@ def resnext152(pretrained=False, **kwargs):
 def cifar_cnn13(pretrained=False, **kwargs):
     assert not pretrained
     model = CNN13(**kwargs)
+    return model
+
+
+@export
+def cifar_cnn13_k(pretrained=False, **kwargs):
+    assert not pretrained
+    model = CNN13_K(**kwargs)
     return model
 
 
@@ -319,11 +328,11 @@ class ShiftConvDownsample(nn.Module):
 
 
 class GaussianNoise(nn.Module):
-    
+
     def __init__(self, std):
         super(GaussianNoise, self).__init__()
         self.std = std
-    
+
     def forward(self, x):
         zeros_ = torch.zeros(x.size()).cuda()
         n = Variable(torch.normal(zeros_, std=self.std).cuda())
@@ -336,7 +345,7 @@ class CNN13(nn.Module):
     """
     CNN from Mean Teacher paper
     """
-    
+
     def __init__(self, num_classes=10):
         super(CNN13, self).__init__()
 
@@ -350,7 +359,7 @@ class CNN13(nn.Module):
         self.bn1c = nn.BatchNorm2d(128)
         self.mp1 = nn.MaxPool2d(2, stride=2, padding=0)
         self.drop1  = nn.Dropout(0.5)
-        
+
         self.conv2a = weight_norm(nn.Conv2d(128, 256, 3, padding=1))
         self.bn2a = nn.BatchNorm2d(256)
         self.conv2b = weight_norm(nn.Conv2d(256, 256, 3, padding=1))
@@ -359,7 +368,7 @@ class CNN13(nn.Module):
         self.bn2c = nn.BatchNorm2d(256)
         self.mp2 = nn.MaxPool2d(2, stride=2, padding=0)
         self.drop2  = nn.Dropout(0.5)
-        
+
         self.conv3a = weight_norm(nn.Conv2d(256, 512, 3, padding=0))
         self.bn3a = nn.BatchNorm2d(512)
         self.conv3b = weight_norm(nn.Conv2d(512, 256, 1, padding=0))
@@ -367,27 +376,205 @@ class CNN13(nn.Module):
         self.conv3c = weight_norm(nn.Conv2d(256, 128, 1, padding=0))
         self.bn3c = nn.BatchNorm2d(128)
         self.ap3 = nn.AvgPool2d(6, stride=2, padding=0)
-        
+
         self.fc1 =  weight_norm(nn.Linear(128, num_classes))
         self.fc2 =  weight_norm(nn.Linear(128, num_classes))
-    
+
     def forward(self, x, debug=False):
         x = self.activation(self.bn1a(self.conv1a(x)))
         x = self.activation(self.bn1b(self.conv1b(x)))
         x = self.activation(self.bn1c(self.conv1c(x)))
         x = self.mp1(x)
         x = self.drop1(x)
-        
+
         x = self.activation(self.bn2a(self.conv2a(x)))
         x = self.activation(self.bn2b(self.conv2b(x)))
         x = self.activation(self.bn2c(self.conv2c(x)))
         x = self.mp2(x)
         x = self.drop2(x)
-        
+
         x = self.activation(self.bn3a(self.conv3a(x)))
         x = self.activation(self.bn3b(self.conv3b(x)))
         x = self.activation(self.bn3c(self.conv3c(x)))
         x = self.ap3(x)
- 
+
         x = x.view(-1, 128)
         return self.fc1(x), self.fc2(x)
+
+
+class CNN13_K(nn.Module):
+    def __init__(self, num_classes=10):
+        super(CNN13_K, self).__init__()
+
+        self.conv = CNN13_K_CONV(num_classes)
+        self.fc = CNN13_K_FC(num_classes)
+        self.disc = CNN13_K_Disc()
+
+    def set_mode(self, mode):
+        if mode == 'classify':
+            for param in self.conv.parameters():
+                param.requires_grad = True
+            for param in self.fc.parameters():
+                param.requires_grad = True
+            for param in self.disc.parameters():
+                param.requires_grad = False
+            self.conv.train(mode=True)
+            self.fc.train(mode=True)
+            self.disc.train(mode=False)
+        elif mode == 'discriminator':
+            for param in self.conv.parameters():
+                param.requires_grad = False
+            for param in self.fc.parameters():
+                param.requires_grad = False
+            for param in self.disc.parameters():
+                param.requires_grad = True
+            self.conv.train(mode=False)
+            self.fc.train(mode=False)
+            self.disc.train(mode=True)
+        elif mode == 'generator':
+            for param in self.conv.parameters():
+                param.requires_grad = True
+            for param in self.fc.parameters():
+                param.requires_grad = False
+            for param in self.disc.parameters():
+                param.requires_grad = True
+            self.conv.train(mode=True)
+            self.fc.train(mode=False)
+            self.disc.train(mode=True)
+        elif mode == 'validate':
+            for param in self.conv.parameters():
+                param.requires_grad = False
+            for param in self.fc.parameters():
+                param.requires_grad = False
+            for param in self.disc.parameters():
+                param.requires_grad = False
+            self.conv.train(mode=False)
+            self.fc.train(mode=False)
+            self.disc.train(mode=False)
+        else:
+            LOG.info('Unknown CNN13_K mode.')
+            exit(1)
+
+    def forward(self, x, mode, bs=0, lbs=0):
+        self.set_mode(mode)
+
+        if mode == 'classify':
+            x = self.conv.forward(x)
+            return self.fc.forward(x)
+
+        elif mode == 'discriminator':
+            assert bs == lbs * 2
+            z = self.conv.forward(x)
+
+            z_unlabeled = z.split(lbs)[0]  # fake
+            z_labeled = z.split(lbs)[1]    # real
+
+            d_unlabeled = self.disc(z_unlabeled)
+            d_labeled = self.disc(z_labeled)
+
+            return d_unlabeled, d_labeled
+
+        elif mode == 'generator':
+            assert bs == lbs * 2
+            z = self.conv.forward(x)
+            z_unlabeled = z.split(lbs)[0]   # fake
+
+            d_unlabeled = self.disc(z_unlabeled)
+            return d_unlabeled
+
+        elif mode == 'validate':
+            z = self.conv.forward(x)
+            out1, out2 = self.fc.forward(z)
+            # outd = self.disc(z)
+            return out1, out2
+
+        else:
+            LOG.info('Unknown CNN13_K mode.')
+            exit(1)
+
+
+class CNN13_K_CONV(nn.Module):
+    """
+    CNN from Mean Teacher paper
+    """
+
+    def __init__(self, num_classes=10):
+        super(CNN13_K_CONV, self).__init__()
+
+        self.gn = GaussianNoise(0.15)
+        self.activation = nn.LeakyReLU(0.1)
+        self.conv1a = weight_norm(nn.Conv2d(3, 128, 3, padding=1))
+        self.bn1a = nn.BatchNorm2d(128)
+        self.conv1b = weight_norm(nn.Conv2d(128, 128, 3, padding=1))
+        self.bn1b = nn.BatchNorm2d(128)
+        self.conv1c = weight_norm(nn.Conv2d(128, 128, 3, padding=1))
+        self.bn1c = nn.BatchNorm2d(128)
+        self.mp1 = nn.MaxPool2d(2, stride=2, padding=0)
+        self.drop1 = nn.Dropout(0.5)
+
+        self.conv2a = weight_norm(nn.Conv2d(128, 256, 3, padding=1))
+        self.bn2a = nn.BatchNorm2d(256)
+        self.conv2b = weight_norm(nn.Conv2d(256, 256, 3, padding=1))
+        self.bn2b = nn.BatchNorm2d(256)
+        self.conv2c = weight_norm(nn.Conv2d(256, 256, 3, padding=1))
+        self.bn2c = nn.BatchNorm2d(256)
+        self.mp2 = nn.MaxPool2d(2, stride=2, padding=0)
+        self.drop2 = nn.Dropout(0.5)
+
+        self.conv3a = weight_norm(nn.Conv2d(256, 512, 3, padding=0))
+        self.bn3a = nn.BatchNorm2d(512)
+        self.conv3b = weight_norm(nn.Conv2d(512, 256, 1, padding=0))
+        self.bn3b = nn.BatchNorm2d(256)
+        self.conv3c = weight_norm(nn.Conv2d(256, 128, 1, padding=0))
+        self.bn3c = nn.BatchNorm2d(128)
+        self.ap3 = nn.AvgPool2d(6, stride=2, padding=0)
+
+    def forward(self, x, debug=False):
+        x = self.activation(self.bn1a(self.conv1a(x)))
+        x = self.activation(self.bn1b(self.conv1b(x)))
+        x = self.activation(self.bn1c(self.conv1c(x)))
+        x = self.mp1(x)
+        x = self.drop1(x)
+
+        x = self.activation(self.bn2a(self.conv2a(x)))
+        x = self.activation(self.bn2b(self.conv2b(x)))
+        x = self.activation(self.bn2c(self.conv2c(x)))
+        x = self.mp2(x)
+        x = self.drop2(x)
+
+        x = self.activation(self.bn3a(self.conv3a(x)))
+        x = self.activation(self.bn3b(self.conv3b(x)))
+        x = self.activation(self.bn3c(self.conv3c(x)))
+        x = self.ap3(x)
+
+        x = x.view(-1, 128)
+        return x
+
+
+class CNN13_K_FC(nn.Module):
+    def __init__(self, num_classes=10):
+        super(CNN13_K_FC, self).__init__()
+
+        self.fc1 = weight_norm(nn.Linear(128, num_classes))
+        self.fc2 = weight_norm(nn.Linear(128, num_classes))
+
+    def forward(self, x, debug=False):
+        return self.fc1(x), self.fc2(x)
+
+
+class CNN13_K_Disc(nn.Module):
+    def __init__(self):
+        super(CNN13_K_Disc, self).__init__()
+
+        self.disc1 = nn.Linear(128, 1024)
+        self.disc2 = nn.Linear(1024, 1024)
+        self.disc3 = nn.Linear(1024, 1)
+
+    def forward(self, x, debug=False):
+        """Not use dropout"""
+        x = self.disc1(x)
+        x = F.relu(x)
+        x = self.disc2(x)
+        x = F.relu(x)
+
+        return F.sigmoid(self.disc3(x))

@@ -39,9 +39,9 @@ def create_compite_model(side, num_classes):
 
     model_factory = architectures.__dict__[args.arch]
     model_params = dict(pretrained=args.pretrained, num_classes=num_classes)
-    model = model_factory(**model_params)
-    model = nn.DataParallel(model).cuda()
-    return model
+    model_module = model_factory(**model_params)
+    model = nn.DataParallel(model_module).cuda()
+    return model, model_module
 
 
 def create_data_loaders(train_transformation, eval_transformation, datadir, args):
@@ -101,6 +101,13 @@ def adjust_learning_rate(optimizer, epoch, step_in_epoch,
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
 
+def adjust_disc_learning_rate(optimizer, epoch, step_in_epoch, total_steps_in_epoch):
+    epoch = epoch + step_in_epoch / total_steps_in_epoch
+
+    lr = ramps.linear_rampup(epoch, args.disc_lr_rampup) * args.disc_lr
+    for param_group in optimizer.param_groups:
+        param_group['lr'] = lr
+
 def accuracy(output, target, topk=(1, )):
     """Computes the precision@k for the specified values of k"""
     maxk = max(topk)
@@ -148,7 +155,11 @@ def validate(eval_loader, model, log, global_step, epoch):
         meters.update('labeled_minibatch_size', labeled_minibatch_size)
 
         # compute output
-        output1, output2 = model(input_var)
+        if args.arch == 'cifar_cnn13_k':
+            output1, output2 = model(input_var, mode='validate')
+        else:
+            output1, output2 = model(input_var)
+
         softmax1, softmax2 = F.softmax(
             output1, dim=1), F.softmax(
                 output2, dim=1)
@@ -193,10 +204,10 @@ def calculate_train_ema_loss(train_loader, l_model, r_model):
     LOG.info('Calculate train ema loss initial value.')
     class_criterion = nn.CrossEntropyLoss(size_average=False, ignore_index=NO_LABEL).cuda()
     meters = AverageMeterSet()
-    
+
     l_model.eval()
     r_model.eval()
-    
+
     end = time.time()
     for i, ((l_input, r_input), target) in enumerate(train_loader):
         l_input_var = torch.autograd.Variable(l_input, volatile=True)
@@ -207,8 +218,12 @@ def calculate_train_ema_loss(train_loader, l_model, r_model):
         labeled_minibatch_size = target_var.data.ne(NO_LABEL).sum()
         assert labeled_minibatch_size > 0
 
-        l_model_out = l_model(l_input_var)
-        r_model_out = r_model(r_input_var)
+        if args.arch == 'cifar_cnn13_k':
+            l_model_out = l_model(l_input_var, mode='validate')
+            r_model_out = r_model(r_input_var, mode='validate')
+        else:
+            l_model_out = l_model(l_input_var)
+            r_model_out = r_model(r_input_var)
 
         if isinstance(l_model_out, Variable):
             assert args.logit_distance_cost < 0
@@ -240,7 +255,8 @@ def calculate_train_ema_loss(train_loader, l_model, r_model):
 
     return meters['l_class_loss'].avg, meters['r_class_loss'].avg
 
-def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, epoch, log):
+
+def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, l_disc_optim, r_disc_optim, epoch, log):
     global global_step
     global l_ema_loss
     global r_ema_loss
@@ -295,8 +311,12 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, epoch,
         assert labeled_minibatch_size > 0
         meters.update('labeled_minibatch_size', labeled_minibatch_size)
 
-        l_model_out = l_model(l_input_var)
-        r_model_out = r_model(r_input_var)
+        if args.arch == 'cifar_cnn13_k':
+            l_model_out = l_model(l_input_var, mode='classify')
+            r_model_out = r_model(r_input_var, mode='classify')
+        else:
+            l_model_out = l_model(l_input_var)
+            r_model_out = r_model(r_input_var)
 
         # now just use 2 output for cifar10 dataset
         if isinstance(l_model_out, Variable):
@@ -323,7 +343,7 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, epoch,
         l_loss, r_loss = l_class_loss, r_class_loss
 
         # update ema loss values
-        l_ema_loss = (1 - args.ema_loss) * l_class_loss.data[0] + args.ema_loss * l_ema_loss 
+        l_ema_loss = (1 - args.ema_loss) * l_class_loss.data[0] + args.ema_loss * l_ema_loss
         r_ema_loss = (1 - args.ema_loss) * r_class_loss.data[0] + args.ema_loss * r_ema_loss
         meters.update('l_ema_loss', l_ema_loss)
         meters.update('r_ema_loss', r_ema_loss)
@@ -335,7 +355,7 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, epoch,
 
             # left model is better
             if l_ema_loss < r_ema_loss:
-            # if l_class_loss.data[0] < r_class_loss.data[0]:
+                # if l_class_loss.data[0] < r_class_loss.data[0]:
                 l_cons_logit = Variable(l_cons_logit.detach().data, requires_grad=False)
                 consistency_loss = consistency_weight * consistency_criterion(r_cons_logit, l_cons_logit) / minibatch_size
                 r_loss += consistency_loss
@@ -344,7 +364,7 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, epoch,
 
             # right model is better
             elif l_ema_loss > r_ema_loss:
-            # elif l_class_loss.data[0] > r_class_loss.data[0]:
+                # elif l_class_loss.data[0] > r_class_loss.data[0]:
                 r_cons_logit = Variable(r_cons_logit.detach().data, requires_grad=False)
                 consistency_loss = consistency_weight * consistency_criterion(l_cons_logit, r_cons_logit) / minibatch_size
                 l_loss += consistency_loss
@@ -385,6 +405,37 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, epoch,
         r_loss.backward()
         r_optimizer.step()
 
+        if args.arch == 'cifar_cnn13_k':
+            adjust_disc_learning_rate(l_disc_optim, epoch, i, len(train_loader))
+            adjust_disc_learning_rate(r_disc_optim, epoch, i, len(train_loader))
+            l_model.zero_grad()
+            r_model.zero_grad()
+
+            # fake, real
+            l_unlabeled_out, l_labeled_out = l_model(l_input_var, mode='discriminator', bs=minibatch_size, lbs=labeled_minibatch_size)
+            r_unlabeled_out, r_labeled_out = r_model(r_input_var, mode='discriminator', bs=minibatch_size, lbs=labeled_minibatch_size)
+
+            tiny = 1e-15
+            l_disc_loss = (-torch.mean(torch.log(l_labeled_out + tiny) + torch.log(1 - l_unlabeled_out + tiny))) / minibatch_size
+            r_disc_loss = (-torch.mean(torch.log(r_labeled_out + tiny) + torch.log(1 - r_unlabeled_out + tiny))) / minibatch_size
+
+            if i % args.print_freq == 0:
+                LOG.info('l_unlabeled: {0}'.format(list(l_unlabeled_out.data.cpu().numpy().tolist())[:5]))
+                LOG.info('l_labeled: {0}'.format(list(l_labeled_out.data.cpu().numpy().tolist())[:5]))
+                LOG.info('r_unlabeled: {0}'.format(list(r_unlabeled_out.data.cpu().numpy().tolist())[:5]))
+                LOG.info('r_labeled: {0}'.format(list(r_labeled_out.data.cpu().numpy().tolist())[:5]))
+
+            meters.update('l_disc_loss', l_disc_loss.data[0])
+            meters.update('r_disc_loss', r_disc_loss.data[0])
+
+            l_disc_optim.zero_grad()
+            l_disc_loss.backward()
+            l_disc_optim.step()
+
+            r_disc_optim.zero_grad()
+            r_disc_loss.backward()
+            r_disc_optim.step()
+
         global_step += 1
         meters.update('batch_time', time.time() - end)
         end = time.time()
@@ -402,8 +453,14 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, epoch,
                      'L-Prec@1 {meters[l_top1]:.3f}\t'
                      'R-Prec@1 {meters[r_top1]:.3f}\t'
                      'L-Prec@5 {meters[l_top5]:.3f}\t'
-                     'R-Prec@5 {meters[r_top5]:.3f}'.format(
+                     'R-Prec@5 {meters[r_top5]:.3f}\n'
+                     'L-DISC {meters[l_disc_loss]:.4f}\t'
+                     'R-DISC {meters[r_disc_loss]:.4f}'.format(
                      epoch, i, len(train_loader), meters=meters, better=meters['better_model']))
+                LOG.info('\n')
+
+            # if args.arch == 'cifar_cnn13_k':
+            # LOG.info('L-DISC' {})
 
             log.record(epoch + i / len(train_loader), {
                 'step': global_step,
@@ -425,22 +482,51 @@ def main(context):
     dataset_config = datasets.__dict__[args.dataset]()
     num_classes = dataset_config.pop('num_classes')
     train_loader, eval_loader = create_data_loaders(**dataset_config, args=args)
-    l_model = create_compite_model(side='l', num_classes=num_classes)
-    r_model = create_compite_model(side='r', num_classes=num_classes)
+    l_model, l_model_module = create_compite_model(side='l', num_classes=num_classes)
+    r_model, r_model_module = create_compite_model(side='r', num_classes=num_classes)
 
     LOG.info(parameters_string(l_model))
     LOG.info(parameters_string(r_model))
 
-    l_optimizer = torch.optim.SGD(params=l_model.parameters(),
-                                  lr=args.lr,
-                                  momentum=args.momentum,
-                                  weight_decay=args.weight_decay,
-                                  nesterov=args.nesterov)
-    r_optimizer = torch.optim.SGD(params=r_model.parameters(),
-                                  lr=args.lr,
-                                  momentum=args.momentum,
-                                  weight_decay=args.weight_decay,
-                                  nesterov=args.nesterov)
+
+    if args.arch == 'cifar_cnn13_k':
+        l_optimizer = torch.optim.SGD([
+            {'params': l_model_module.conv.parameters(), 'lr': args.lr},
+            {'params': l_model_module.fc.parameters(), 'lr': args.lr}],
+            lr=args.lr, momentum=args.momentum,
+            weight_decay=args.weight_decay,
+            nesterov=args.nesterov)
+
+        r_optimizer = torch.optim.SGD([
+            {'params': r_model_module.conv.parameters(), 'lr': args.lr},
+            {'params': r_model_module.fc.parameters(), 'lr': args.lr}],
+            lr=args.lr, momentum=args.momentum,
+            weight_decay=args.weight_decay,
+            nesterov=args.nesterov)
+
+        l_disc_optim = torch.optim.Adam([
+            {'params': l_model_module.conv.parameters(), 'lr': args.disc_lr},
+            {'params': l_model_module.disc.parameters(), 'lr': args.disc_lr}],
+            lr=args.disc_lr)
+
+        r_disc_optim = torch.optim.Adam([
+            {'params': r_model_module.conv.parameters(), 'lr': args.disc_lr},
+            {'params': r_model_module.disc.parameters(), 'lr': args.disc_lr}],
+            lr=args.disc_lr)
+
+    else:
+        l_optimizer = torch.optim.SGD(params=l_model.parameters(),
+                                      lr=args.lr,
+                                      momentum=args.momentum,
+                                      weight_decay=args.weight_decay,
+                                      nesterov=args.nesterov)
+        r_optimizer = torch.optim.SGD(params=r_model.parameters(),
+                                      lr=args.lr,
+                                      momentum=args.momentum,
+                                      weight_decay=args.weight_decay,
+                                      nesterov=args.nesterov)
+        l_disc_optim, r_disc_optim = None, None
+
 
     if args.resume:
         assert os.path.isfile(args.resume), '=> no checkpoint found at: {}'.format(args.resume)
@@ -471,7 +557,7 @@ def main(context):
     for epoch in range(args.start_epoch, args.epochs):
         start_time = time.time()
         # train for one epoch
-        train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, epoch, training_log)
+        train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, l_disc_optim, r_disc_optim, epoch, training_log)
         LOG.info('--- training epoch in {} seconds ---'.format(time.time()-start_time))
 
         is_best = False

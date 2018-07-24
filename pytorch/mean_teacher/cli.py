@@ -48,10 +48,14 @@ def create_parser():
                         metavar='N', help="labeled examples per minibatch (default: no constrain)")
     parser.add_argument('--lr', '--learning-rate', default=0.1, type=float,
                         metavar='LR', help='max learning rate')
+    parser.add_argument('--disc-lr', default=0.0, type=float,
+                        metavar='DISCLR', help='')
     parser.add_argument('--initial-lr', default=0.0, type=float,
                         metavar='LR', help='initial learning rate when using linear rampup')
     parser.add_argument('--lr-rampup', default=0, type=int, metavar='EPOCHS',
                         help='length of learning rate rampup in the beginning')
+    parser.add_argument('--disc-lr-rampup', default=0, type=int, metavar='EPOCHS',
+                        help='')
     parser.add_argument('--lr-rampdown-epochs', default=None, type=int, metavar='EPOCHS',
                         help='length of learning rate cosine rampdown (>= length of training)')
     parser.add_argument('--momentum', default=0.9, type=float, metavar='M',
