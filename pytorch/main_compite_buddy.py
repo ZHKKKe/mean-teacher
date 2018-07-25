@@ -416,8 +416,12 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, l_disc
             r_unlabeled_out, r_labeled_out, z_u, z = r_model(r_input_var, mode='discriminator', bs=minibatch_size, lbs=labeled_minibatch_size)
 
             tiny = 1e-15
-            l_disc_loss = -torch.mean(torch.log(l_labeled_out + tiny) + torch.log(1 - l_unlabeled_out + tiny))
-            r_disc_loss = -torch.mean(torch.log(r_labeled_out + tiny) + torch.log(1 - r_unlabeled_out + tiny))
+            if args.reverse_fake:
+                l_disc_loss = -torch.mean(torch.log(l_unlabeled_out + tiny) + torch.log(1 - l_labeled_out + tiny))
+                r_disc_loss = -torch.mean(torch.log(r_unlabeled_out + tiny) + torch.log(1 - r_labeled_out + tiny))
+            else:
+                l_disc_loss = -torch.mean(torch.log(l_labeled_out + tiny) + torch.log(1 - l_unlabeled_out + tiny))
+                r_disc_loss = -torch.mean(torch.log(r_labeled_out + tiny) + torch.log(1 - r_unlabeled_out + tiny))
 
             if i % args.print_freq == 0:
                 LOG.info('l_unlabeled: {0}'.format(list(l_unlabeled_out.data.cpu().numpy().tolist())[:5]))
@@ -445,8 +449,12 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, l_disc
             r_unlabeled_out, r_labeled_out = r_model(r_input_var, mode='generator', bs=minibatch_size, lbs=labeled_minibatch_size)
 
             tiny = 1e-15
-            l_g_loss = -torch.mean(torch.log(l_unlabeled_out + tiny))
-            r_g_loss = -torch.mean(torch.log(r_unlabeled_out + tiny))
+            if args.reverse_fake:
+                l_g_loss = -torch.mean(torch.log(l_labeled_out + tiny))
+                r_g_loss = -torch.mean(torch.log(r_labeled_out + tiny))
+            else:
+                l_g_loss = -torch.mean(torch.log(l_unlabeled_out + tiny))
+                r_g_loss = -torch.mean(torch.log(r_unlabeled_out + tiny))
 
             meters.update('l_g_loss', l_g_loss.data[0])
             meters.update('r_g_loss', r_g_loss.data[0])

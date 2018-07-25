@@ -93,7 +93,7 @@ def create_parser():
                         help='loss moving average of competitive-buddy, set 0 to close it')
     parser.add_argument('--epoch-init-ema-loss', default=True, type=str2bool, metavar='BOOL',
                         help='')
-    
+    parser.add_argument('--reverse-fake', default=False, type=str2bool, metavar='BOOL', help='')
     return parser
 
 
