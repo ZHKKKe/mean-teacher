@@ -437,10 +437,10 @@ class CNN13_K(nn.Module):
             for param in self.fc.parameters():
                 param.requires_grad = False
             for param in self.disc.parameters():
-                param.requires_grad = True
+                param.requires_grad = False
             self.conv.train(mode=True)
             self.fc.train(mode=False)
-            self.disc.train(mode=True)
+            self.disc.train(mode=False)
         elif mode == 'validate':
             for param in self.conv.parameters():
                 param.requires_grad = False
