@@ -406,10 +406,12 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, l_disc
         r_optimizer.step()
 
         if args.arch == 'cifar_cnn13_k':
+            # Train discriminator
             adjust_disc_learning_rate(l_disc_optim, epoch, i, len(train_loader))
             adjust_disc_learning_rate(r_disc_optim, epoch, i, len(train_loader))
 
-            # fake, real
+            # TODO: try labeled, unlabeled = fake, real
+            # unlabeled, labeled = fake, real
             l_unlabeled_out, l_labeled_out, l_z_u, l_z = l_model(l_input_var, mode='discriminator', bs=minibatch_size, lbs=labeled_minibatch_size)
             r_unlabeled_out, r_labeled_out, z_u, z = r_model(r_input_var, mode='discriminator', bs=minibatch_size, lbs=labeled_minibatch_size)
 
@@ -424,7 +426,7 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, l_disc
                 LOG.info('r_labeled: {0}'.format(list(r_labeled_out.data.cpu().numpy().tolist())[:5]))
                 LOG.info('unlabeled_d: {0}'.format(list(z_u.data.cpu().numpy().tolist())[0][0]))
                 LOG.info('labeled_d: {0}'.format(list(z.data.cpu().numpy().tolist())[0][0]))
-    
+
             meters.update('l_disc_loss', l_disc_loss.data[0])
             meters.update('r_disc_loss', r_disc_loss.data[0])
 
@@ -434,6 +436,32 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, l_disc
 
             r_disc_optim.zero_grad()
             r_disc_loss.backward()
+            r_disc_optim.step()
+
+            # Train cnn generator
+            # TODO: try labeled, unlabeled = fake, real
+            # unlabeled, labeled = fake, real
+            l_unlabeled_out, l_labeled_out = l_model(l_input_var, mode='generator', bs=minibatch_size, lbs=labeled_minibatch_size)
+            r_unlabeled_out, r_labeled_out = r_model(r_input_var, mode='generator', bs=minibatch_size, lbs=labeled_minibatch_size)
+
+            tiny = 1e-15
+            l_g_loss = -torch.mean(torch.log(l_unlabeled_out + tiny))
+            r_g_loss = -torch.mean(torch.log(r_unlabeled_out + tiny))
+
+            meters.update('l_g_loss', l_g_loss.data[0])
+            meters.update('r_g_loss', r_g_loss.data[0])
+
+            if i % args.print_freq == 0:
+                LOG.info('l_g_loss: {meters[l_g_loss]:.4f}\t'
+                         'r_g_loss: {meters[r_g_loss]:.4f}'.format(
+                         meters=meters))
+
+            l_disc_optim.zero_grad()
+            l_g_loss.backward()
+            l_disc_optim.step()
+
+            r_disc_optim.zero_grad()
+            r_g_loss.backward()
             r_disc_optim.step()
 
         global_step += 1
@@ -458,9 +486,6 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, l_disc
                      'R-DISC {meters[r_disc_loss]:.4f}'.format(
                      epoch, i, len(train_loader), meters=meters, better=meters['better_model']))
             LOG.info('\n')
-
-            # if args.arch == 'cifar_cnn13_k':
-            # LOG.info('L-DISC' {})
 
             log.record(epoch + i / len(train_loader), {
                 'step': global_step,
@@ -540,6 +565,8 @@ def main(context):
         r_model.load_state_dict(checkpoint['r_model'])
         l_optimizer.load_state_dict(checkpoint['l_optimizer'])
         r_optimizer.load_state_dict(checkpoint['r_optimizer'])
+        l_disc_optim.load_state_dict(checkpoint['l_disc_optim'])
+        r_disc_optim.load_state_dict(checkpoint['r_disc_optim'])
 
         LOG.info('=> loaded checkpoint {} (epoch {})'.format(args.resume, checkpoint['epoch']))
 
@@ -589,6 +616,8 @@ def main(context):
                 'r_model': r_model.state_dict(),
                 'l_optimizer':l_optimizer.state_dict(),
                 'r_optimizer':r_optimizer.state_dict(),
+                'l_disc_optim': l_disc_optim.state_dict(),
+                'r_disc_optim': r_disc_optim.state_dict(),
             }, is_best, checkpoint_path, epoch + 1)
 
 

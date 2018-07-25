@@ -57,24 +57,38 @@ def main(context):
 
         model_factory = architectures.__dict__[args.arch]
         model_params = dict(pretrained=args.pretrained, num_classes=num_classes)
-        model = model_factory(**model_params)
-        model = nn.DataParallel(model).cuda()
+        model_module = model_factory(**model_params)
+        model = nn.DataParallel(model_module).cuda()
 
         if ema:
             for param in model.parameters():
                 param.detach_()
 
-        return model
+        return model, model_module
 
-    model = create_model()
-    ema_model = create_model(ema=True)
+    model, model_module = create_model()
+    ema_model, ema_model_module = create_model(ema=True)
 
     LOG.info(parameters_string(model))
 
-    optimizer = torch.optim.SGD(model.parameters(), args.lr,
-                                momentum=args.momentum,
-                                weight_decay=args.weight_decay,
-                                nesterov=args.nesterov)
+    if args.arch == 'cifar_cnn13_k':
+        optimizer = torch.optim.SGD([
+            {'params': model_module.conv.parameters(), 'lr': args.lr},
+            {'params': model_module.fc.parameters(), 'lr': args.lr}],
+            lr=args.lr, momentum=args.momentum,
+            weight_decay=args.weight_decay,
+            nesterov=args.nesterov)
+
+        disc_optim = torch.optim.Adam([
+            {'params': model_module.conv.parameters(), 'lr': args.disc_lr},
+            {'params': model_module.disc.parameters(), 'lr': args.disc_lr}],
+            lr=args.disc_lr)
+    else:
+        optimizer = torch.optim.SGD(model.parameters(), args.lr,
+                                    momentum=args.momentum,
+                                    weight_decay=args.weight_decay,
+                                    nesterov=args.nesterov)
+        disc_optim = None
 
     # optionally resume from a checkpoint
     if args.resume:
@@ -87,6 +101,7 @@ def main(context):
         model.load_state_dict(checkpoint['state_dict'])
         ema_model.load_state_dict(checkpoint['ema_state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer'])
+        disc_optim.load_state_dict(checkpoint['disc_optim'])
         LOG.info("=> loaded checkpoint '{}' (epoch {})".format(args.resume, checkpoint['epoch']))
 
     cudnn.benchmark = True
@@ -101,7 +116,7 @@ def main(context):
     for epoch in range(args.start_epoch, args.epochs):
         start_time = time.time()
         # train for one epoch
-        train(train_loader, model, ema_model, optimizer, epoch, training_log)
+        train(train_loader, model, ema_model, optimizer, disc_optim, epoch, training_log)
         LOG.info("--- training epoch in %s seconds ---" % (time.time() - start_time))
 
         if args.evaluation_epochs and (epoch + 1) % args.evaluation_epochs == 0:
@@ -125,6 +140,7 @@ def main(context):
                 'ema_state_dict': ema_model.state_dict(),
                 'best_prec1': best_prec1,
                 'optimizer' : optimizer.state_dict(),
+                'disc_optim': disc_optim.state_dict(),
             }, is_best, checkpoint_path, epoch + 1)
 
 
@@ -193,7 +209,7 @@ def update_ema_variables(model, ema_model, alpha, global_step):
         ema_param.data.mul_(alpha).add_(1 - alpha, param.data)
 
 
-def train(train_loader, model, ema_model, optimizer, epoch, log):
+def train(train_loader, model, ema_model, optimizer, disc_optim, epoch, log):
     global global_step
 
     class_criterion = nn.CrossEntropyLoss(size_average=False, ignore_index=NO_LABEL).cuda()
@@ -228,8 +244,12 @@ def train(train_loader, model, ema_model, optimizer, epoch, log):
         assert labeled_minibatch_size > 0
         meters.update('labeled_minibatch_size', labeled_minibatch_size)
 
-        ema_model_out = ema_model(ema_input_var)
-        model_out = model(input_var)
+        if args.arch == 'cifar_cnn13_k':
+            ema_model_out = ema_model(ema_input_var, mode='classify')
+            model_out = model(input_var, mode='classify')
+        else:
+            ema_model_out = ema_model(ema_input_var)
+            model_out = model(input_var)
 
         if isinstance(model_out, Variable):
             assert args.logit_distance_cost < 0
@@ -286,6 +306,30 @@ def train(train_loader, model, ema_model, optimizer, epoch, log):
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
+
+        if args.arch == 'cifar_cnn13_k':
+            unlabeled_out, labeled_out, z_u, z = model(input_var, mode='discriminator', bs=minibatch_size, lbs=labeled_minibatch_size)
+            ema_unlabeled_out, ema_labeled_out, ema_z_u, ema_z = ema_model(ema_input_var, mode='discriminator', bs=minibatch_size, lbs=labeled_minibatch_size)
+
+            tiny=1e-15
+            disc_loss = -torch.mean(torch.log(labeled_out + tiny) + torch.log(1 - unlabeled_out + tiny))
+            ema_disc_loss = -torch.mean(torch.log(ema_labeled_out + tiny) + torch.log(1 - ema_unlabeled_out + tiny))
+
+            if i % args.print_freq == 0:
+                LOG.info('unlabeled: {0}'.format(list(unlabeled_out.data.cpu().numpy().tolist())[:5]))
+                LOG.info('labeled: {0}'.format(list(labeled_out.data.cpu().numpy().tolist())[:5]))
+                LOG.info('ema_unlabeled: {0}'.format(list(ema_unlabeled_out.data.cpu().numpy().tolist())[:5]))
+                LOG.info('ema_labeled: {0}'.format(list(ema_labeled_out.data.cpu().numpy().tolist())[:5]))
+                LOG.info('ema_unlabeled_d: {0}'.format(list(ema_z_u.data.cpu().numpy().tolist())[0][0]))
+                LOG.info('ema_labeled_d: {0}'.format(list(ema_z.data.cpu().numpy().tolist())[0][0]))
+
+            meters.update('disc_loss', disc_loss.data[0])
+            meters.update('ema_disc_loss', ema_disc_loss.data[0])
+
+            disc_optim.zero_grad()
+            disc_loss.backward()
+            disc_optim.step()
+
         global_step += 1
         update_ema_variables(model, ema_model, args.ema_decay, global_step)
 
@@ -334,7 +378,10 @@ def validate(eval_loader, model, log, global_step, epoch):
         meters.update('labeled_minibatch_size', labeled_minibatch_size)
 
         # compute output
-        output1, output2 = model(input_var)
+        if args.arch == 'cifar_cnn13_k':
+            output1, output2 = model(input_var, mode='validate')
+        else:
+            output1, output2 = model(input_var)
         softmax1, softmax2 = F.softmax(output1, dim=1), F.softmax(output2, dim=1)
         class_loss = class_criterion(output1, target_var) / minibatch_size
 

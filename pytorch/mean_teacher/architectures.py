@@ -479,11 +479,15 @@ class CNN13_K(nn.Module):
 
         elif mode == 'generator':
             assert bs == lbs * 2
-            z = self.conv.forward(x)
-            z_unlabeled = z.split(lbs)[0]   # fake
+            x = x.split(lbs)
+
+            z_unlabeled = self.conv.forward(x[0])
+            z_labeled = self.conv.forward(x[1])
 
             d_unlabeled = self.disc(z_unlabeled)
-            return d_unlabeled
+            d_labeled = self.disc(z_labeled)
+
+            return d_unlabeled, d_labeled
 
         elif mode == 'validate':
             z = self.conv.forward(x)
