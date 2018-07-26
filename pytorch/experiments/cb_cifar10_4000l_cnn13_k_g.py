@@ -38,16 +38,20 @@ def parameters():
         'lr_rampup': 0,
         'base_lr': 0.1,
         'nesterov': True,
-        'disc_lr': 0.0001,
-        'reverse_fake': True,
-        # 'disc_lr_rampup': 5,
 
+        'disc_lr': 0.0001,
+        # 'disc_lr_rampup': 5,
         'train_generator': True,
+        
+        'same_net_init': False,
+        'reverse_fake': False,
 
         # EMA loss competition
         'ema_loss': 0.5,
-        'epoch_init_ema_loss': False, 
+        'epoch_init_ema_loss': True,
+        # 'ema_decay': 0.97,
 
+        'draw_curve': True,
     }
 
     # 4000 labels:

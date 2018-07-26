@@ -30,6 +30,55 @@ global_step = 0
 l_ema_loss = 0
 r_ema_loss = 0
 
+tmp_path = ''
+
+
+def pca_drawer(x, y, epoch, name):
+    import matplotlib
+    matplotlib.use('TkAgg')
+    import matplotlib.pyplot as plt
+
+    global tmp_path
+
+    plt.clf()
+
+    plt.title(name)
+    plt.grid(True)
+    plt.xlabel('x')
+    plt.ylabel('y')
+    plt.xticks(fontsize=7)
+    plt.yticks(fontsize=7)
+    data_0 = x[..., 0]
+    data_1 = x[..., 1]
+
+    # plt.axis('tight')
+    x_side = 0.3 * (np.max(data_0) - np.min(data_0))
+    y_side = 0.3 * (np.max(data_1) - np.min(data_1))
+    plt.axis([
+        np.min(data_0) - x_side,
+        np.max(data_0) + x_side,
+        np.min(data_1) - y_side,
+        np.max(data_1) + y_side
+    ])
+
+    # split data
+    data = {}
+    for i in range(-1, 10):
+        data[i] = [[], []]
+
+    for idx, label in enumerate(y):
+        data[label][0].append(x[idx][0])
+        data[label][1].append(x[idx][1])
+
+    for i in range(-1, 10):
+        plt.scatter(data[i][0], data[i][1], label=i, marker='.', s=3)
+
+    plt.legend(loc='upper right')
+    filename = name + '_{}.jpg'.format(epoch)
+    file_path = os.path.join(tmp_path, filename)
+    plt.savefig(file_path)
+    plt.close('all')
+
 
 def create_compite_model(side, num_classes):
     LOG.info('=> creating {pretrained} {side} model: {arch}'.format(
@@ -141,13 +190,16 @@ def update_ema_variables(model, ema_model, alpha, global_step):
         ema_param.data.mul_(alpha).add_(1 - alpha, param.data)
 
 
-def validate(eval_loader, model, log, global_step, epoch):
+def validate(eval_loader, model, log, global_step, epoch, name=''):
     class_criterion = nn.CrossEntropyLoss(
         size_average=False, ignore_index=NO_LABEL).cuda()
     meters = AverageMeterSet()
 
     # switch to evaluate mode
     model.eval()
+
+    pca_features = []
+    pca_labeles = []
 
     end = time.time()
     for i, (input, target) in enumerate(eval_loader):
@@ -164,9 +216,22 @@ def validate(eval_loader, model, log, global_step, epoch):
 
         # compute output
         if args.arch == 'cifar_cnn13_k':
-            output1, output2 = model(input_var, mode='validate')
+            model_out = model(input_var, mode='validate', debug=True)
         else:
-            output1, output2 = model(input_var)
+            model_out = model(input_var)
+
+        feature = None
+        if len(model_out) == 2:
+            output1, output2 = model_out
+        elif len(model_out) == 3:
+            output1, output2, feature = model_out
+
+        if feature is not None:
+            f_data = feature.data.cpu().numpy()
+            t_data = target_var.data.cpu().numpy()
+            for idx, feature in enumerate(f_data):
+                pca_features.append(feature)
+                pca_labeles.append(t_data[idx])
 
         softmax1, softmax2 = F.softmax(
             output1, dim=1), F.softmax(
@@ -204,9 +269,19 @@ def validate(eval_loader, model, log, global_step, epoch):
             **meters.sums()
         })
 
+    if args.draw_curve:
+        LOG.info('--------------- PCA FEATURE DRAWER ---------------')
+        from sklearn.decomposition import PCA
+        pca_features = np.asarray(pca_features)
+        pca_labeles = np.asarray(pca_labeles)
+        pca = PCA(n_components=2)
+        pca_results = pca.fit_transform(pca_features)
+        pca_drawer(pca_results, pca_labeles, epoch=epoch, name=name)
+        LOG.info('--------------------------------------------------')
+
     return meters['top1'].avg
 
-def calculate_train_ema_loss(train_loader, l_model, r_model):
+def calculate_train_ema_loss(train_loader, l_model, r_model, epoch=0):
     # loss calculate scale same as train
     # Note: loss calculate scale not same as validate?
     LOG.info('Calculate train ema loss initial value.')
@@ -215,6 +290,14 @@ def calculate_train_ema_loss(train_loader, l_model, r_model):
 
     l_model.eval()
     r_model.eval()
+
+
+    l_pca_features = []
+    l_pca_labeles = []
+    r_pca_features = []
+    r_pca_labeles = []
+
+    # l_unlabeled_out.data.cpu().numpy().tolist())[:5])
 
     end = time.time()
     for i, ((l_input, r_input), target) in enumerate(train_loader):
@@ -227,21 +310,40 @@ def calculate_train_ema_loss(train_loader, l_model, r_model):
         assert labeled_minibatch_size > 0
 
         if args.arch == 'cifar_cnn13_k':
-            l_model_out = l_model(l_input_var, mode='validate')
-            r_model_out = r_model(r_input_var, mode='validate')
+            l_model_out = l_model(l_input_var, mode='validate', debug=True)
+            r_model_out = r_model(r_input_var, mode='validate', debug=True)
         else:
             l_model_out = l_model(l_input_var)
             r_model_out = r_model(r_input_var)
 
+        l_feature, r_feature = None, None
         if isinstance(l_model_out, Variable):
             assert args.logit_distance_cost < 0
             l_output1 = l_model_out
             r_output1 = r_model_out
         else:
-            assert len(l_model_out) == 2
-            assert len(r_model_out) == 2
-            l_output1, _ = l_model_out
-            r_output1, _ = r_model_out
+            assert len(l_model_out) in [2, 3]
+            assert len(r_model_out) in [2, 3]
+            if len(l_model_out) == 2:
+                l_output1, _ = l_model_out
+                r_output1, _ = r_model_out
+            elif len(l_model_out) == 3:
+                l_output1, _, l_feature = l_model_out
+                r_output1, _, r_feature = r_model_out
+
+        if l_feature is not None:
+            l_f_data = l_feature.data.cpu().numpy()
+            l_t_data = target_var.data.cpu().numpy()
+            for idx, feature in enumerate(l_f_data):
+                l_pca_features.append(feature)
+                l_pca_labeles.append(l_t_data[idx])
+
+        if r_feature is not None:
+            r_f_data = r_feature.data.cpu().numpy()
+            r_t_data = target_var.data.cpu().numpy()
+            for idx, feature in enumerate(r_f_data):
+                r_pca_features.append(feature)
+                r_pca_labeles.append(r_t_data[idx])
 
         l_class_loss = class_criterion(l_output1, target_var) / minibatch_size
         r_class_loss = class_criterion(r_output1, target_var) / minibatch_size
@@ -260,11 +362,27 @@ def calculate_train_ema_loss(train_loader, l_model, r_model):
 
     LOG.info(' * L_EMA_LOSS {l.avg:.4f}\tR_EMA_LOSS {r.avg:.4f}'.format(
         l=meters['l_class_loss'], r=meters['r_class_loss']))
+    
+    if args.draw_curve:
+        LOG.info('--------------- PCA FEATURE DRAWER ---------------')
+        from sklearn.decomposition import PCA
+        l_pca_features = np.asarray(l_pca_features)
+        l_pca_labeles = np.asarray(l_pca_labeles)
+        l_pca = PCA(n_components=2)
+        l_pca_results = l_pca.fit_transform(l_pca_features)
+        pca_drawer(l_pca_results, l_pca_labeles, epoch=epoch, name='l_train_pca')
+
+        r_pca_features = np.asarray(r_pca_features)
+        r_pca_labeles = np.asarray(r_pca_labeles)
+        r_pca = PCA(n_components=2)
+        r_pca_results = r_pca.fit_transform(r_pca_features)
+        pca_drawer(r_pca_results, r_pca_labeles, epoch=epoch, name='r_train_pca')
+        LOG.info('--------------------------------------------------')
 
     return meters['l_class_loss'].avg, meters['r_class_loss'].avg
 
 
-def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, l_disc_optim, r_disc_optim, epoch, log):
+def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, l_disc_optim, r_disc_optim, l_gen_optim, r_gen_optim, epoch, log):
     global global_step
     global l_ema_loss
     global r_ema_loss
@@ -295,7 +413,7 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, l_disc
 
     # calculate epoch initial ema loss values
     if epoch != 0 and args.epoch_init_ema_loss:
-        l_ema_loss, r_ema_loss = calculate_train_ema_loss(train_loader, l_model, r_model)
+        l_ema_loss, r_ema_loss = calculate_train_ema_loss(train_loader, l_model, r_model, epoch)
 
     l_model.train()
     r_model.train()
@@ -382,7 +500,7 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, l_disc
             else:
                 consistency_loss = 0
                 meters.update('cons_loss', 0)
-
+                meters.update('better_model', 0.)  # 1 == right model
         else:
             consistency_loss = 0
             meters.update('cons_loss', 0)
@@ -415,8 +533,8 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, l_disc
 
         if args.arch == 'cifar_cnn13_k':
             # Train discriminator
-            adjust_disc_learning_rate(l_disc_optim, epoch, i, len(train_loader))
-            adjust_disc_learning_rate(r_disc_optim, epoch, i, len(train_loader))
+            # adjust_disc_learning_rate(l_disc_optim, epoch, i, len(train_loader))
+            # adjust_disc_learning_rate(r_disc_optim, epoch, i, len(train_loader))
 
             # TODO: try labeled, unlabeled = fake, real
             # unlabeled, labeled = fake, real
@@ -472,20 +590,22 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, l_disc
                             'r_g_loss: {meters[r_g_loss]:.4f}'.format(
                             meters=meters))
 
-                l_disc_optim.zero_grad()
+                l_gen_optim.zero_grad()
                 l_g_loss.backward()
-                l_disc_optim.step()
+                l_gen_optim.step()
 
-                r_disc_optim.zero_grad()
+                r_gen_optim.zero_grad()
                 r_g_loss.backward()
-                r_disc_optim.step()
+                r_gen_optim.step()
 
         global_step += 1
-        if l_ema_loss < r_ema_loss:
-            update_ema_variables(l_model, r_model, args.ema_decay, global_step)
-        elif l_ema_loss > r_ema_loss:
-            update_ema_variables(r_model, l_model, args.ema_decay, global_step)
-        
+
+        # Net weight EMA -- not use
+        # if l_ema_loss < r_ema_loss:
+        #     update_ema_variables(l_model, r_model, args.ema_decay, global_step)
+        # elif l_ema_loss > r_ema_loss:
+        #     update_ema_variables(r_model, l_model, args.ema_decay, global_step)
+
         meters.update('batch_time', time.time() - end)
         end = time.time()
 
@@ -519,7 +639,9 @@ def main(context):
     global global_step
     global l_ema_loss
     global r_ema_loss
+    global tmp_path
 
+    tmp_path = context.tmp_dir
     checkpoint_path = context.transient_dir
     training_log = context.create_train_log('training')
     l_validation_log = context.create_train_log('l_validation')
@@ -554,15 +676,12 @@ def main(context):
             weight_decay=args.weight_decay,
             nesterov=args.nesterov)
 
-        l_disc_optim = torch.optim.Adam([
-            {'params': l_model_module.conv.parameters(), 'lr': args.disc_lr},
-            {'params': l_model_module.disc.parameters(), 'lr': args.disc_lr}],
-            lr=args.disc_lr)
+        l_disc_optim = torch.optim.Adam(params=l_model_module.disc.parameters(), lr=args.disc_lr)
+        l_gen_optim = torch.optim.Adam(params=l_model_module.conv.parameters(), lr=args.disc_lr)
 
-        r_disc_optim = torch.optim.Adam([
-            {'params': r_model_module.conv.parameters(), 'lr': args.disc_lr},
-            {'params': r_model_module.disc.parameters(), 'lr': args.disc_lr}],
-            lr=args.disc_lr)
+
+        r_disc_optim = torch.optim.Adam(params=r_model_module.disc.parameters(), lr=args.disc_lr)
+        r_gen_optim = torch.optim.Adam(params=r_model_module.conv.parameters(), lr=args.disc_lr)
 
     else:
         l_optimizer = torch.optim.SGD(params=l_model.parameters(),
@@ -600,9 +719,9 @@ def main(context):
 
     if args.evaluate:
         LOG.info('Evaluating the left model: ')
-        validate(eval_loader, l_model, l_validation_log, global_step, args.start_epoch)
+        validate(eval_loader, l_model, l_validation_log, global_step, args.start_epoch, name='l_test_pca')
         LOG.info('Evaluating the right model: ')
-        validate(eval_loader, r_model, r_validation_log, global_step, args.start_epoch)
+        validate(eval_loader, r_model, r_validation_log, global_step, args.start_epoch, name='r_test_pca')
         return
 
     l_ema_loss, r_ema_loss = calculate_train_ema_loss(train_loader, l_model, r_model)
@@ -610,7 +729,7 @@ def main(context):
     for epoch in range(args.start_epoch, args.epochs):
         start_time = time.time()
         # train for one epoch
-        train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, l_disc_optim, r_disc_optim, epoch, training_log)
+        train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, l_disc_optim, r_disc_optim, l_gen_optim, r_gen_optim, epoch, training_log)
         LOG.info('--- training epoch in {} seconds ---'.format(time.time()-start_time))
 
         is_best = False
@@ -618,9 +737,9 @@ def main(context):
         if args.evaluation_epochs and (epoch + 1) % args.evaluation_epochs == 0:
             start_time = time.time()
             LOG.info('Evaluating the left model: ')
-            l_prec1 = validate(eval_loader, l_model, l_validation_log, global_step, epoch + 1)
+            l_prec1 = validate(eval_loader, l_model, l_validation_log, global_step, epoch + 1, name='l_test_pca')
             LOG.info('Evaluating the right model: ')
-            r_prec1 = validate(eval_loader, r_model, r_validation_log, global_step, epoch + 1)
+            r_prec1 = validate(eval_loader, r_model, r_validation_log, global_step, epoch + 1, name='r_test_pca')
             LOG.info('--- validation in {} seconds ---'.format(time.time() - start_time))
             better_prec1 = l_prec1 if l_prec1 > r_prec1 else r_prec1
             best_prec1 = max(better_prec1, best_prec1)

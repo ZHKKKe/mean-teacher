@@ -455,7 +455,7 @@ class CNN13_K(nn.Module):
             LOG.info('Unknown CNN13_K mode.')
             exit(1)
 
-    def forward(self, x, mode, bs=0, lbs=0):
+    def forward(self, x, mode, bs=0, lbs=0, debug=False):
         self.set_mode(mode)
 
         if mode == 'classify':
@@ -493,7 +493,10 @@ class CNN13_K(nn.Module):
             z = self.conv.forward(x)
             out1, out2 = self.fc.forward(z)
             # outd = self.disc(z)
-            return out1, out2
+            if debug:
+                return out1, out2, z
+            else:
+                return out1, out2
 
         else:
             LOG.info('Unknown CNN13_K mode.')
