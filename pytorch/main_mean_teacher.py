@@ -634,6 +634,20 @@ def pca_drawer(x, y, epoch, name):
 
     global tmp_path
 
+    color_map = {
+        -1: 'indianred',
+        0: 'orange',
+        1: 'khaki',
+        2: 'lightgreen',
+        3: 'paleturquoise',
+        4: 'dodgerblue',
+        5: 'lightsteelblue',
+        6: 'slategray',
+        7: 'mediumpurple',
+        8: 'hotpink',
+        9: 'silver',
+    }
+
     plt.clf()
 
     plt.title(name)
@@ -645,6 +659,7 @@ def pca_drawer(x, y, epoch, name):
     data_0 = x[..., 0]
     data_1 = x[..., 1]
 
+    # plt.axis('tight')
     x_side = 0.3 * (np.max(data_0) - np.min(data_0))
     y_side = 0.3 * (np.max(data_1) - np.min(data_1))
     plt.axis([
@@ -664,12 +679,13 @@ def pca_drawer(x, y, epoch, name):
         data[label][1].append(x[idx][1])
 
     for i in range(-1, 10):
-        plt.scatter(data[i][0], data[i][1], label=i, marker='.', s=3)
+        plt.scatter(
+            data[i][0], data[i][1], label=i, marker='.', s=3, c=color_map[i])
 
     plt.legend(loc='upper right')
     filename = name + '_{}.jpg'.format(epoch)
     file_path = os.path.join(tmp_path, filename)
-    plt.savefig(file_path)
+    plt.savefig(file_path, dpi=300)
     plt.close('all')
 
 

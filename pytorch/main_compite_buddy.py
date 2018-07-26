@@ -40,6 +40,20 @@ def pca_drawer(x, y, epoch, name):
 
     global tmp_path
 
+    color_map = {
+        -1: 'indianred',
+        0: 'orange',
+        1: 'khaki',
+        2: 'lightgreen',
+        3: 'paleturquoise',
+        4: 'dodgerblue',
+        5: 'lightsteelblue',
+        6: 'slategray',
+        7: 'mediumpurple',
+        8: 'hotpink',
+        9: 'silver',
+    }
+
     plt.clf()
 
     plt.title(name)
@@ -71,12 +85,12 @@ def pca_drawer(x, y, epoch, name):
         data[label][1].append(x[idx][1])
 
     for i in range(-1, 10):
-        plt.scatter(data[i][0], data[i][1], label=i, marker='.', s=3)
+        plt.scatter(data[i][0], data[i][1], label=i, marker='.', s=3, c=color_map[i])
 
     plt.legend(loc='upper right')
     filename = name + '_{}.jpg'.format(epoch)
     file_path = os.path.join(tmp_path, filename)
-    plt.savefig(file_path)
+    plt.savefig(file_path, dpi=300)
     plt.close('all')
 
 
@@ -360,9 +374,10 @@ def calculate_train_ema_loss(train_loader, l_model, r_model, epoch=0):
                      'L_EMA_Loss: {meters[l_class_loss]:.4f}\t'
                      'R_EMA_Loss: {meters[r_class_loss]:.4f}'.format(i, meters=meters))
 
+        break
     LOG.info(' * L_EMA_LOSS {l.avg:.4f}\tR_EMA_LOSS {r.avg:.4f}'.format(
         l=meters['l_class_loss'], r=meters['r_class_loss']))
-    
+
     if args.draw_curve:
         LOG.info('--------------- PCA FEATURE DRAWER ---------------')
         from sklearn.decomposition import PCA
@@ -599,7 +614,7 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, l_disc
                 r_gen_optim.step()
 
         global_step += 1
-
+        break
         # Net weight EMA -- not use
         # if l_ema_loss < r_ema_loss:
         #     update_ema_variables(l_model, r_model, args.ema_decay, global_step)
