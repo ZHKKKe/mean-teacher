@@ -374,7 +374,6 @@ def calculate_train_ema_loss(train_loader, l_model, r_model, epoch=0):
                      'L_EMA_Loss: {meters[l_class_loss]:.4f}\t'
                      'R_EMA_Loss: {meters[r_class_loss]:.4f}'.format(i, meters=meters))
 
-        break
     LOG.info(' * L_EMA_LOSS {l.avg:.4f}\tR_EMA_LOSS {r.avg:.4f}'.format(
         l=meters['l_class_loss'], r=meters['r_class_loss']))
 
@@ -614,7 +613,6 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, l_disc
                 r_gen_optim.step()
 
         global_step += 1
-        break
         # Net weight EMA -- not use
         # if l_ema_loss < r_ema_loss:
         #     update_ema_variables(l_model, r_model, args.ema_decay, global_step)
