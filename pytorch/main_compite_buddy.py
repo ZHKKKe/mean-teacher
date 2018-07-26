@@ -133,6 +133,14 @@ def save_checkpoint(state, is_best, dirpath, epoch):
         shutil.copyfile(checkpoint_path, best_path)
         LOG.info("--- checkpoint copied to %s ---" % best_path)
 
+
+def update_ema_variables(model, ema_model, alpha, global_step):
+    # Use the true average until the exponential average is more correct
+    alpha = min(1 - 1 / (global_step + 1), alpha)
+    for ema_param, param in zip(ema_model.parameters(), model.parameters()):
+        ema_param.data.mul_(alpha).add_(1 - alpha, param.data)
+
+
 def validate(eval_loader, model, log, global_step, epoch):
     class_criterion = nn.CrossEntropyLoss(
         size_average=False, ignore_index=NO_LABEL).cuda()
@@ -442,37 +450,42 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, l_disc
             r_disc_loss.backward()
             r_disc_optim.step()
 
-            # Train cnn generator
-            # TODO: try labeled, unlabeled = fake, real
-            # unlabeled, labeled = fake, real
-            l_unlabeled_out, l_labeled_out = l_model(l_input_var, mode='generator', bs=minibatch_size, lbs=labeled_minibatch_size)
-            r_unlabeled_out, r_labeled_out = r_model(r_input_var, mode='generator', bs=minibatch_size, lbs=labeled_minibatch_size)
+            if args.train_generator:
+                # Train cnn generator
+                l_unlabeled_out, l_labeled_out = l_model(l_input_var, mode='generator', bs=minibatch_size, lbs=labeled_minibatch_size)
+                r_unlabeled_out, r_labeled_out = r_model(r_input_var, mode='generator', bs=minibatch_size, lbs=labeled_minibatch_size)
 
-            tiny = 1e-15
-            if args.reverse_fake:
-                l_g_loss = -torch.mean(torch.log(l_labeled_out + tiny))
-                r_g_loss = -torch.mean(torch.log(r_labeled_out + tiny))
-            else:
-                l_g_loss = -torch.mean(torch.log(l_unlabeled_out + tiny))
-                r_g_loss = -torch.mean(torch.log(r_unlabeled_out + tiny))
+                tiny = 1e-15
+                if args.reverse_fake:
+                    l_g_loss = -torch.mean(torch.log(l_labeled_out + tiny))
+                    r_g_loss = -torch.mean(torch.log(r_labeled_out + tiny))
+                else:
+                    # unlabeled, labeled = fake, real
+                    l_g_loss = -torch.mean(torch.log(l_unlabeled_out + tiny))
+                    r_g_loss = -torch.mean(torch.log(r_unlabeled_out + tiny))
 
-            meters.update('l_g_loss', l_g_loss.data[0])
-            meters.update('r_g_loss', r_g_loss.data[0])
+                meters.update('l_g_loss', l_g_loss.data[0])
+                meters.update('r_g_loss', r_g_loss.data[0])
 
-            if i % args.print_freq == 0:
-                LOG.info('l_g_loss: {meters[l_g_loss]:.4f}\t'
-                         'r_g_loss: {meters[r_g_loss]:.4f}'.format(
-                         meters=meters))
+                if i % args.print_freq == 0:
+                    LOG.info('l_g_loss: {meters[l_g_loss]:.4f}\t'
+                            'r_g_loss: {meters[r_g_loss]:.4f}'.format(
+                            meters=meters))
 
-            l_disc_optim.zero_grad()
-            l_g_loss.backward()
-            l_disc_optim.step()
+                l_disc_optim.zero_grad()
+                l_g_loss.backward()
+                l_disc_optim.step()
 
-            r_disc_optim.zero_grad()
-            r_g_loss.backward()
-            r_disc_optim.step()
+                r_disc_optim.zero_grad()
+                r_g_loss.backward()
+                r_disc_optim.step()
 
         global_step += 1
+        if l_ema_loss < r_ema_loss:
+            update_ema_variables(l_model, r_model, args.ema_decay, global_step)
+        elif l_ema_loss > r_ema_loss:
+            update_ema_variables(r_model, l_model, args.ema_decay, global_step)
+        
         meters.update('batch_time', time.time() - end)
         end = time.time()
 
@@ -518,9 +531,13 @@ def main(context):
     l_model, l_model_module = create_compite_model(side='l', num_classes=num_classes)
     r_model, r_model_module = create_compite_model(side='r', num_classes=num_classes)
 
+    if args.same_net_init:
+        LOG.info('same net init.')
+        for l_param, r_param in zip(l_model.parameters(), r_model.parameters()):
+            r_param.data.mul_(0.0).add_(l_param.data)
+
     LOG.info(parameters_string(l_model))
     LOG.info(parameters_string(r_model))
-
 
     if args.arch == 'cifar_cnn13_k':
         l_optimizer = torch.optim.SGD([
@@ -573,8 +590,9 @@ def main(context):
         r_model.load_state_dict(checkpoint['r_model'])
         l_optimizer.load_state_dict(checkpoint['l_optimizer'])
         r_optimizer.load_state_dict(checkpoint['r_optimizer'])
-        l_disc_optim.load_state_dict(checkpoint['l_disc_optim'])
-        r_disc_optim.load_state_dict(checkpoint['r_disc_optim'])
+        if args.arch == 'cifar_cnn13_k':
+            l_disc_optim.load_state_dict(checkpoint['l_disc_optim'])
+            r_disc_optim.load_state_dict(checkpoint['r_disc_optim'])
 
         LOG.info('=> loaded checkpoint {} (epoch {})'.format(args.resume, checkpoint['epoch']))
 
@@ -615,18 +633,30 @@ def main(context):
                 LOG.info('Right model work better.')
 
         if args.checkpoint_epochs and (epoch + 1) % args.checkpoint_epochs == 0:
-            save_checkpoint({
-                'epoch': epoch + 1,
-                'global_step': global_step,
-                'better_model': -1 if l_better else 1,
-                'arch': args.arch,
-                'l_model': l_model.state_dict(),
-                'r_model': r_model.state_dict(),
-                'l_optimizer':l_optimizer.state_dict(),
-                'r_optimizer':r_optimizer.state_dict(),
-                'l_disc_optim': l_disc_optim.state_dict(),
-                'r_disc_optim': r_disc_optim.state_dict(),
-            }, is_best, checkpoint_path, epoch + 1)
+            if args.arch == 'cifar_cnn13_k':
+                save_checkpoint({
+                    'epoch': epoch + 1,
+                    'global_step': global_step,
+                    'better_model': -1 if l_better else 1,
+                    'arch': args.arch,
+                    'l_model': l_model.state_dict(),
+                    'r_model': r_model.state_dict(),
+                    'l_optimizer':l_optimizer.state_dict(),
+                    'r_optimizer':r_optimizer.state_dict(),
+                    'l_disc_optim': l_disc_optim.state_dict(),
+                    'r_disc_optim': r_disc_optim.state_dict(),
+                }, is_best, checkpoint_path, epoch + 1)
+            else:
+                save_checkpoint({
+                    'epoch': epoch + 1,
+                    'global_step': global_step,
+                    'better_model': -1 if l_better else 1,
+                    'arch': args.arch,
+                    'l_model': l_model.state_dict(),
+                    'r_model': r_model.state_dict(),
+                    'l_optimizer': l_optimizer.state_dict(),
+                    'r_optimizer': r_optimizer.state_dict(),
+                }, is_best, checkpoint_path, epoch + 1)
 
 
 

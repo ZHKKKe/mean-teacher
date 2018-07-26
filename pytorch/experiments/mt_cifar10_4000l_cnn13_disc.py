@@ -51,6 +51,8 @@ def parameters():
         'base_lr': 0.1,
         'nesterov': True,
         'disc_lr': 0.0001,
+
+        'train_generator': True,
     }
 
     # 4000 labels:

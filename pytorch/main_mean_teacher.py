@@ -101,7 +101,8 @@ def main(context):
         model.load_state_dict(checkpoint['state_dict'])
         ema_model.load_state_dict(checkpoint['ema_state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer'])
-        disc_optim.load_state_dict(checkpoint['disc_optim'])
+        if args.arch == 'cifar_cnn13_k':
+            disc_optim.load_state_dict(checkpoint['disc_optim'])
         LOG.info("=> loaded checkpoint '{}' (epoch {})".format(args.resume, checkpoint['epoch']))
 
     cudnn.benchmark = True
@@ -132,16 +133,27 @@ def main(context):
             is_best = False
 
         if args.checkpoint_epochs and (epoch + 1) % args.checkpoint_epochs == 0:
-            save_checkpoint({
-                'epoch': epoch + 1,
-                'global_step': global_step,
-                'arch': args.arch,
-                'state_dict': model.state_dict(),
-                'ema_state_dict': ema_model.state_dict(),
-                'best_prec1': best_prec1,
-                'optimizer' : optimizer.state_dict(),
-                'disc_optim': disc_optim.state_dict(),
-            }, is_best, checkpoint_path, epoch + 1)
+            if args.arch == 'cifar_cnn13_k':
+                save_checkpoint({
+                    'epoch': epoch + 1,
+                    'global_step': global_step,
+                    'arch': args.arch,
+                    'state_dict': model.state_dict(),
+                    'ema_state_dict': ema_model.state_dict(),
+                    'best_prec1': best_prec1,
+                    'optimizer' : optimizer.state_dict(),
+                    'disc_optim': disc_optim.state_dict(),
+                }, is_best, checkpoint_path, epoch + 1)
+            else:
+                save_checkpoint({
+                    'epoch': epoch + 1,
+                    'global_step': global_step,
+                    'arch': args.arch,
+                    'state_dict': model.state_dict(),
+                    'ema_state_dict': ema_model.state_dict(),
+                    'best_prec1': best_prec1,
+                    'optimizer': optimizer.state_dict(),
+                }, is_best, checkpoint_path, epoch + 1)
 
 
 def parse_dict_args(**kwargs):
@@ -330,6 +342,25 @@ def train(train_loader, model, ema_model, optimizer, disc_optim, epoch, log):
             disc_loss.backward()
             disc_optim.step()
 
+            if args.train_generator:
+                # Train cnn generator
+                unlabeled_out, labeled_out = model(input_var, mode='generator', bs=minibatch_size, lbs=labeled_minibatch_size)
+                ema_unlabeled_out, ema_labeled_out = ema_model(ema_input_var, mode='generator', bs=minibatch_size, lbs=labeled_minibatch_size)
+
+                g_loss = -torch.mean(torch.log(unlabeled_out + tiny))
+                ema_g_loss = -torch.mean(torch.log(ema_unlabeled_out + tiny))
+                meters.update('g_loss', g_loss.data[0])
+                meters.update('ema_g_loss', ema_g_loss.data[0])
+
+                if i % args.print_freq == 0:
+                    LOG.info('g_loss: {meters[g_loss]:.4f}\t'
+                            'ema_g_loss: {meters[ema_g_loss]:.4f}'.format(
+                            meters=meters))
+
+                disc_optim.zero_grad()
+                g_loss.backward()
+                disc_optim.step()
+
         global_step += 1
         update_ema_variables(model, ema_model, args.ema_decay, global_step)
 
@@ -349,7 +380,7 @@ def train(train_loader, model, ema_model, optimizer, disc_optim, epoch, log):
                 'EMA-Prec@1 {meters[top1]:.3f}\t'
                 'EMA-Prec@5 {meters[top5]:.3f}'.format(
                     epoch, i, len(train_loader), meters=meters))
-                    
+
             log.record(epoch + i / len(train_loader), {
                 'step': global_step,
                 **meters.values(),

@@ -94,6 +94,8 @@ def create_parser():
     parser.add_argument('--epoch-init-ema-loss', default=True, type=str2bool, metavar='BOOL',
                         help='')
     parser.add_argument('--reverse-fake', default=False, type=str2bool, metavar='BOOL', help='')
+    parser.add_argument('--same-net-init', default=False, type=str2bool, metavar='BOOL', help='')
+    parser.add_argument('--train-generator', default=False, type=str2bool, metavar='BOOL', help='')
     return parser
 
 

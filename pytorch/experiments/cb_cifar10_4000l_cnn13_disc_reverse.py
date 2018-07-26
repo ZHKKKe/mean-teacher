@@ -42,6 +42,8 @@ def parameters():
         'reverse_fake': True,
         # 'disc_lr_rampup': 5,
 
+        'train_generator': True,
+
         # EMA loss competition
         'ema_loss': 0.5,
         'epoch_init_ema_loss': False, 
