@@ -50,6 +50,8 @@ def create_parser():
                         metavar='LR', help='max learning rate')
     parser.add_argument('--disc-lr', default=0.0, type=float,
                         metavar='DISCLR', help='')
+    parser.add_argument('--gen-lr', default=0.0, type=float,
+                        metavar='GENLR', help='')
     parser.add_argument('--initial-lr', default=0.0, type=float,
                         metavar='LR', help='initial learning rate when using linear rampup')
     parser.add_argument('--lr-rampup', default=0, type=int, metavar='EPOCHS',

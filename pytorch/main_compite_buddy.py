@@ -94,7 +94,7 @@ def pca_drawer(x, y, epoch, name):
     plt.close('all')
 
 
-def create_compite_model(side, num_classes):
+def create_compete_model(side, num_classes):
     LOG.info('=> creating {pretrained} {side} model: {arch}'.format(
         pretrained='pre-trained' if args.pretrained else 'non-pre-trained',
         side=side,
@@ -229,7 +229,7 @@ def validate(eval_loader, model, log, global_step, epoch, name=''):
         meters.update('labeled_minibatch_size', labeled_minibatch_size)
 
         # compute output
-        if args.arch == 'cifar_cnn13_k':
+        if args.arch == 'cifar_cnn13_k' or args.arch == 'cifar_cnn13_k2':
             model_out = model(input_var, mode='validate', debug=True)
         else:
             model_out = model(input_var)
@@ -323,7 +323,7 @@ def calculate_train_ema_loss(train_loader, l_model, r_model, epoch=0):
         labeled_minibatch_size = target_var.data.ne(NO_LABEL).sum()
         assert labeled_minibatch_size > 0
 
-        if args.arch == 'cifar_cnn13_k':
+        if args.arch == 'cifar_cnn13_k' or args.arch == 'cifar_cnn13_k2':
             l_model_out = l_model(l_input_var, mode='validate', debug=True)
             r_model_out = r_model(r_input_var, mode='validate', debug=True)
         else:
@@ -396,7 +396,7 @@ def calculate_train_ema_loss(train_loader, l_model, r_model, epoch=0):
     return meters['l_class_loss'].avg, meters['r_class_loss'].avg
 
 
-def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, l_disc_optim, r_disc_optim, l_gen_optim, r_gen_optim, epoch, log):
+def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, l_disc_optim, r_disc_optim, l_gen_optim, r_gen_optim, epoch, log, d_model=None):
     global global_step
     global l_ema_loss
     global r_ema_loss
@@ -451,7 +451,7 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, l_disc
         assert labeled_minibatch_size > 0
         meters.update('labeled_minibatch_size', labeled_minibatch_size)
 
-        if args.arch == 'cifar_cnn13_k':
+        if args.arch == 'cifar_cnn13_k' or args.arch == 'cifar_cnn13_k2':
             l_model_out = l_model(l_input_var, mode='classify')
             r_model_out = r_model(r_input_var, mode='classify')
         else:
@@ -612,6 +612,57 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, l_disc
                 r_g_loss.backward()
                 r_gen_optim.step()
 
+        elif args.arch == 'cifar_cnn13_k2':
+            # Train discriminator
+            l_conv_out = l_model.forward(l_input_var, mode='discriminator')
+            r_conv_out = r_model.forward(r_input_var, mode='discriminator')
+
+            l_disc_out = d_model.forward(l_conv_out)
+            r_disc_out = d_model.forward(r_conv_out)
+
+            # l, r = real, fake
+            tiny = 1e-15
+            disc_loss = -torch.mean(torch.log(l_disc_out + tiny) + torch.log(1 - r_disc_out + tiny))
+
+            if i % args.print_freq == 0:
+                LOG.info('l_disc_out: {0}'.format(list(l_disc_out.data.cpu().numpy().tolist())[:5]))
+                LOG.info('r_disc_out: {0}'.format(list(r_disc_out.data.cpu().numpy().tolist())[:5]))
+                LOG.info('l_conv_out: {0}'.format(list(l_conv_out.data.cpu().numpy().tolist())[0][0]))
+                LOG.info('r_conv_out: {0}'.format(list(r_conv_out.data.cpu().numpy().tolist())[0][0]))
+            meters.update('l_disc_loss', disc_loss.data[0])
+            meters.update('r_disc_loss', disc_loss.data[0])
+
+            l_disc_optim.zero_grad()
+            disc_loss.backward()
+            l_disc_optim.step()
+
+            if args.train_generator:
+                tiny = 1e-15
+                # Train cnn generator
+                # l, r = real, fake
+
+                l_conv_out = l_model.forward(l_input_var, mode='generator')
+                l_disc_out = d_model.forward(l_conv_out)
+                l_g_loss = -torch.mean(torch.log(1 - l_disc_out + tiny))
+
+                r_conv_out = r_model.forward(r_input_var, mode='generator')
+                r_disc_out = d_model.forward(r_conv_out)
+                r_g_loss = -torch.mean(torch.log(r_disc_out + tiny))
+
+                l_gen_optim.zero_grad()
+                l_g_loss.backward()
+                l_gen_optim.step()
+
+                r_gen_optim.zero_grad()
+                r_g_loss.backward()
+                r_gen_optim.step()
+
+                meters.update('l_g_loss', l_g_loss.data[0])
+                meters.update('r_g_loss', r_g_loss.data[0])
+                if i % args.print_freq == 0:
+                    LOG.info('l_g_loss: {meters[l_g_loss]:.4f}\t'
+                             'r_g_loss: {meters[r_g_loss]:.4f}'.format(meters=meters))
+
         global_step += 1
         # Net weight EMA -- not use
         # if l_ema_loss < r_ema_loss:
@@ -663,8 +714,8 @@ def main(context):
     dataset_config = datasets.__dict__[args.dataset]()
     num_classes = dataset_config.pop('num_classes')
     train_loader, eval_loader = create_data_loaders(**dataset_config, args=args)
-    l_model, l_model_module = create_compite_model(side='l', num_classes=num_classes)
-    r_model, r_model_module = create_compite_model(side='r', num_classes=num_classes)
+    l_model, l_model_module = create_compete_model(side='l', num_classes=num_classes)
+    r_model, r_model_module = create_compete_model(side='r', num_classes=num_classes)
 
     if args.same_net_init:
         LOG.info('same net init.')
@@ -674,6 +725,20 @@ def main(context):
     LOG.info(parameters_string(l_model))
     LOG.info(parameters_string(r_model))
 
+    d_model, d_model_module = None, None
+    if args.arch == 'cifar_cnn13_k2':
+        LOG.info('=> creating {pretrained} d-model: {arch}'.format(
+           pretrained='pre-trained' if args.pretrained else 'non-pre-trained', arch=args.arch + '_discriminator'))
+
+        model_factory = architectures.__dict__[args.arch + '_discriminator']
+        model_params = dict(pretrained=args.pretrained)
+        d_model_module = model_factory(**model_params)
+        d_model = nn.DataParallel(d_model_module).cuda()
+
+    LOG.info(parameters_string(d_model))
+
+    l_disc_optim, r_disc_optim = None, None
+    l_gen_optim, r_gen_optim = None, None
     if args.arch == 'cifar_cnn13_k':
         l_optimizer = torch.optim.SGD([
             {'params': l_model_module.conv.parameters(), 'lr': args.lr},
@@ -696,6 +761,27 @@ def main(context):
         r_disc_optim = torch.optim.Adam(params=r_model_module.disc.parameters(), lr=args.disc_lr)
         r_gen_optim = torch.optim.Adam(params=r_model_module.conv.parameters(), lr=args.disc_lr)
 
+    elif args.arch == 'cifar_cnn13_k2':
+        l_optimizer = torch.optim.SGD([
+            {'params': l_model_module.conv.parameters(), 'lr': args.lr},
+            {'params': l_model_module.fc.parameters(), 'lr': args.lr}],
+            lr=args.lr, momentum=args.momentum,
+            weight_decay=args.weight_decay,
+            nesterov=args.nesterov)
+
+        r_optimizer = torch.optim.SGD([
+            {'params': r_model_module.conv.parameters(), 'lr': args.lr},
+            {'params': r_model_module.fc.parameters(), 'lr': args.lr}],
+            lr=args.lr, momentum=args.momentum,
+            weight_decay=args.weight_decay,
+            nesterov=args.nesterov)
+
+        l_disc_optim  = torch.optim.Adam(params=d_model.parameters(), lr=args.disc_lr)
+        r_disc_optim = l_disc_optim
+
+        l_gen_optim = torch.optim.Adam(params=l_model_module.conv.parameters(), lr=args.gen_lr)
+        r_gen_optim = torch.optim.Adam(params=r_model_module.conv.parameters(), lr=args.gen_lr)
+
     else:
         l_optimizer = torch.optim.SGD(params=l_model.parameters(),
                                       lr=args.lr,
@@ -707,8 +793,6 @@ def main(context):
                                       momentum=args.momentum,
                                       weight_decay=args.weight_decay,
                                       nesterov=args.nesterov)
-        l_disc_optim, r_disc_optim = None, None
-
 
     if args.resume:
         assert os.path.isfile(args.resume), '=> no checkpoint found at: {}'.format(args.resume)
@@ -722,9 +806,11 @@ def main(context):
         r_model.load_state_dict(checkpoint['r_model'])
         l_optimizer.load_state_dict(checkpoint['l_optimizer'])
         r_optimizer.load_state_dict(checkpoint['r_optimizer'])
-        if args.arch == 'cifar_cnn13_k':
+        if args.arch == 'cifar_cnn13_k' or args.arch == 'cifar_cnn13_k2':
             l_disc_optim.load_state_dict(checkpoint['l_disc_optim'])
             r_disc_optim.load_state_dict(checkpoint['r_disc_optim'])
+            l_gen_optim.load_state_dict(checkpoint['l_gen_optim'])
+            r_gen_optim.load_state_dict(checkpoint['r_gen_optim'])
 
         LOG.info('=> loaded checkpoint {} (epoch {})'.format(args.resume, checkpoint['epoch']))
 
@@ -742,7 +828,7 @@ def main(context):
     for epoch in range(args.start_epoch, args.epochs):
         start_time = time.time()
         # train for one epoch
-        train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, l_disc_optim, r_disc_optim, l_gen_optim, r_gen_optim, epoch, training_log)
+        train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, l_disc_optim, r_disc_optim, l_gen_optim, r_gen_optim, epoch, training_log, d_model=d_model)
         LOG.info('--- training epoch in {} seconds ---'.format(time.time()-start_time))
 
         is_best = False
@@ -765,7 +851,7 @@ def main(context):
                 LOG.info('Right model work better.')
 
         if args.checkpoint_epochs and (epoch + 1) % args.checkpoint_epochs == 0:
-            if args.arch == 'cifar_cnn13_k':
+            if args.arch == 'cifar_cnn13_k' or args.arch == 'cifar_cnn13_k2':
                 save_checkpoint({
                     'epoch': epoch + 1,
                     'global_step': global_step,
@@ -777,6 +863,8 @@ def main(context):
                     'r_optimizer':r_optimizer.state_dict(),
                     'l_disc_optim': l_disc_optim.state_dict(),
                     'r_disc_optim': r_disc_optim.state_dict(),
+                    'l_gen_optim': l_gen_optim.state_dict(),
+                    'r_gen_optim': r_gen_optim.state_dict(),
                 }, is_best, checkpoint_path, epoch + 1)
             else:
                 save_checkpoint({
