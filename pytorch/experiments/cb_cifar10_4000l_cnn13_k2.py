@@ -40,7 +40,7 @@ def parameters():
         'nesterov': True,
 
         'disc_lr': 0.0001,
-        'gen_lr': 0.0002,
+        'gen_lr': 0.0001,
         # 'disc_lr_rampup': 5,
         'train_generator': False,
         
