@@ -39,7 +39,7 @@ def parameters():
         'base_lr': 0.1,
         'nesterov': True,
 
-        'disc_lr': 0.0001,
+        'disc_lr': 0.00005,
         'gen_lr': 0.0001,
         # 'disc_lr_rampup': 5,
         'train_generator': True,

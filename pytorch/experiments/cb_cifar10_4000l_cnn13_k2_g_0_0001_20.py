@@ -30,7 +30,7 @@ def parameters():
         # Costs
         'consistency_type': 'mse',
         'consistency_rampup': 5,
-        'consistency': 50.0,
+        'consistency': 20.0,
         'logit_distance_cost': -1,
         'weight_decay': 1e-4,
 

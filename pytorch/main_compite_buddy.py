@@ -637,23 +637,39 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, l_disc
             l_disc_optim.step()
 
             if args.train_generator:
+                # Train cnn generator
+                # l, r = real, fake
+
                 tiny = 1e-15
                 l_conv_out = l_model.forward(l_input_var, mode='generator')
                 r_conv_out = r_model.forward(r_input_var, mode='generator')
+                l_disc_out = d_model.forward(l_conv_out)
+                r_disc_out = d_model.forward(r_conv_out)
 
                 js_loss = losses.js_loss(l_conv_out, r_conv_out)
+                l_g_loss = -torch.mean(torch.log(1 - l_disc_out + tiny))
+                r_g_loss = -torch.mean(torch.log(r_disc_out + tiny))
+
 
                 l_gen_optim.zero_grad()
                 r_gen_optim.zero_grad()
 
-                js_loss.backward()
+                js_loss.backward(retain_graph=True)
+                l_g_loss.backward()
+                r_g_loss.backward()
 
                 l_gen_optim.step()
                 r_gen_optim.step()
 
                 meters.update('js_loss', js_loss.data[0])
+                meters.update('l_g_loss', l_g_loss.data[0])
+                meters.update('r_g_loss', r_g_loss.data[0])
+
                 if i % args.print_freq == 0:
-                    LOG.info('js_loss: {meters[js_loss]:.4f}'.format(meters=meters))
+                    LOG.info(
+                        'l_g_loss: {meters[l_g_loss]:.4f}\t'
+                        'r_g_loss: {meters[r_g_loss]:.4f}\t'
+                        'js_loss: {meters[js_loss]:.4f}'.format(meters=meters))
 
         global_step += 1
         # Net weight EMA -- not use
