@@ -61,9 +61,9 @@ def js_loss(input_logits, target_logits):
     # input_logits_detach = F.sigmoid(input_logits_detach)
     # target_logits_detach = F.sigmoid(target_logits_detach)
 
-    input_logits = F.log_softmax(input_logits)
-    target_logits = F.log_softmax(target_logits)
+    input_logits = F.log_softmax(input_logits, dim=1)
+    target_logits = F.log_softmax(target_logits, dim=1)
 
     m = 0.5 * (input_logits_detach + target_logits_detach)
-    m = F.softmax(m)
+    m = F.softmax(m, dim=1)
     return 0.5 * F.kl_div(input_logits, m, size_average=False) + 0.5 * F.kl_div(target_logits, m, size_average=False)

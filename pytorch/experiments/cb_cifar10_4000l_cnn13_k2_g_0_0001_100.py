@@ -7,7 +7,10 @@ import main_compite_buddy
 from mean_teacher.cli import parse_dict_args
 from mean_teacher.run_context import RunContext
 
-LOG = logging.getLogger('runner')
+LOG = logging.getLogger('main')
+fh = logging.FileHandler('log.log')
+fh.setLevel(logging.INFO)
+LOG.addHandler(fh)
 
 def parameters():
     defaults = {
@@ -29,7 +32,7 @@ def parameters():
 
         # Costs
         'consistency_type': 'mse',
-        'consistency_rampup': 5,
+        'consistency_rampup': 0,
         'consistency': 100.0,
         'logit_distance_cost': -1,
         'weight_decay': 1e-4,
@@ -42,17 +45,20 @@ def parameters():
         'disc_lr': 0.00005,
         'gen_lr': 0.0001,
         # 'disc_lr_rampup': 5,
-        'train_generator': True,
+        'train_generator': False,
         
-        'same_net_init': True,
+        'same_net_init': False,
         'reverse_fake': False,
 
         # EMA loss competition
-        'ema_loss': 0.5,
-        'epoch_init_ema_loss': True,
+        'ema_loss': 0.1,
+        'epoch_init_ema_loss': False,
         # 'ema_decay': 0.97,
 
         'draw_curve': True,
+
+        'retrain_bad': True,
+        'auto_cons_loss': True,
     }
 
     # 4000 labels:

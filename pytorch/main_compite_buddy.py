@@ -443,7 +443,7 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, l_disc
         meters.update('r_lr', r_optimizer.param_groups[0]['lr'])
 
         l_input_var = torch.autograd.Variable(l_input)
-        r_input_var = torch.autograd.Variable(r_input)
+        r_input_var = torch.autograd.Variable(l_input) # TODO: change
         target_var = torch.autograd.Variable(target.cuda(async=True))
 
         minibatch_size = len(target_var)
@@ -493,11 +493,22 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, l_disc
             consistency_weight = calculate_consistency_scale(epoch)
             meters.update('cons_weight', consistency_weight)
 
+            ema_scale = 1.0
+            if args.auto_cons_loss:
+                ema_mean = (l_ema_loss + r_ema_loss) / 2
+                ema_bias = math.fabs(l_ema_loss - r_ema_loss)
+                
+                # ema_scale = 0.5 * (-math.exp(-3 * (ema_bias / ema_mean)) + 1)
+                ema_scale = (-math.exp(-(ema_bias / ema_mean)) + 1)
+                if i % args.print_freq == 0:
+                    LOG.info('ema_mean: {0}\t ema_bias: {1}\t ema_scale: {2}'.format(ema_mean, ema_bias, ema_scale))
+
             # left model is better
+            consistency_weight = 0
             if l_ema_loss < r_ema_loss:
                 # if l_class_loss.data[0] < r_class_loss.data[0]:
                 l_cons_logit = Variable(l_cons_logit.detach().data, requires_grad=False)
-                consistency_loss = consistency_weight * consistency_criterion(r_cons_logit, l_cons_logit) / minibatch_size
+                consistency_loss = ema_scale * consistency_weight * consistency_criterion(r_cons_logit, l_cons_logit) / minibatch_size
                 r_loss += consistency_loss
                 meters.update('better_model', -1.)  # -1 == left model
                 meters.update('cons_loss', consistency_loss.data[0])
@@ -506,7 +517,7 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, l_disc
             elif l_ema_loss > r_ema_loss:
                 # elif l_class_loss.data[0] > r_class_loss.data[0]:
                 r_cons_logit = Variable(r_cons_logit.detach().data, requires_grad=False)
-                consistency_loss = consistency_weight * consistency_criterion(l_cons_logit, r_cons_logit) / minibatch_size
+                consistency_loss = ema_scale * consistency_weight * consistency_criterion(l_cons_logit, r_cons_logit) / minibatch_size
                 l_loss += consistency_loss
                 meters.update('better_model', 1.)    # 1 == right model
                 meters.update('cons_loss', consistency_loss.data[0])
@@ -545,131 +556,182 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, l_disc
         r_loss.backward()
         r_optimizer.step()
 
-        if args.arch == 'cifar_cnn13_k':
-            # Train discriminator
-            # adjust_disc_learning_rate(l_disc_optim, epoch, i, len(train_loader))
-            # adjust_disc_learning_rate(r_disc_optim, epoch, i, len(train_loader))
-
-            # TODO: try labeled, unlabeled = fake, real
-            # unlabeled, labeled = fake, real
-            l_unlabeled_out, l_labeled_out, l_z_u, l_z = l_model(l_input_var, mode='discriminator', bs=minibatch_size, lbs=labeled_minibatch_size)
-            r_unlabeled_out, r_labeled_out, z_u, z = r_model(r_input_var, mode='discriminator', bs=minibatch_size, lbs=labeled_minibatch_size)
-
-            tiny = 1e-15
-            if args.reverse_fake:
-                l_disc_loss = -torch.mean(torch.log(l_unlabeled_out + tiny) + torch.log(1 - l_labeled_out + tiny))
-                r_disc_loss = -torch.mean(torch.log(r_unlabeled_out + tiny) + torch.log(1 - r_labeled_out + tiny))
-            else:
-                l_disc_loss = -torch.mean(torch.log(l_labeled_out + tiny) + torch.log(1 - l_unlabeled_out + tiny))
-                r_disc_loss = -torch.mean(torch.log(r_labeled_out + tiny) + torch.log(1 - r_unlabeled_out + tiny))
-
-            if i % args.print_freq == 0:
-                LOG.info('l_unlabeled: {0}'.format(list(l_unlabeled_out.data.cpu().numpy().tolist())[:5]))
-                LOG.info('l_labeled: {0}'.format(list(l_labeled_out.data.cpu().numpy().tolist())[:5]))
-                LOG.info('r_unlabeled: {0}'.format(list(r_unlabeled_out.data.cpu().numpy().tolist())[:5]))
-                LOG.info('r_labeled: {0}'.format(list(r_labeled_out.data.cpu().numpy().tolist())[:5]))
-                LOG.info('unlabeled_d: {0}'.format(list(z_u.data.cpu().numpy().tolist())[0][0]))
-                LOG.info('labeled_d: {0}'.format(list(z.data.cpu().numpy().tolist())[0][0]))
-
-            meters.update('l_disc_loss', l_disc_loss.data[0])
-            meters.update('r_disc_loss', r_disc_loss.data[0])
-
-            l_disc_optim.zero_grad()
-            l_disc_loss.backward()
-            l_disc_optim.step()
-
-            r_disc_optim.zero_grad()
-            r_disc_loss.backward()
-            r_disc_optim.step()
-
-            if args.train_generator:
-                # Train cnn generator
-                l_unlabeled_out, l_labeled_out = l_model(l_input_var, mode='generator', bs=minibatch_size, lbs=labeled_minibatch_size)
-                r_unlabeled_out, r_labeled_out = r_model(r_input_var, mode='generator', bs=minibatch_size, lbs=labeled_minibatch_size)
-
-                tiny = 1e-15
-                if args.reverse_fake:
-                    l_g_loss = -torch.mean(torch.log(l_labeled_out + tiny))
-                    r_g_loss = -torch.mean(torch.log(r_labeled_out + tiny))
+        # retrain-bad-model!
+        if args.retrain_bad:
+            n_in = torch.autograd.Variable(r_input)
+            if l_ema_loss < r_ema_loss:
+                if args.arch == 'cifar_cnn13_k' or args.arch == 'cifar_cnn13_k2':
+                    r_model_out = r_model(n_in, mode='classify')
                 else:
-                    # unlabeled, labeled = fake, real
-                    l_g_loss = -torch.mean(torch.log(l_unlabeled_out + tiny))
-                    r_g_loss = -torch.mean(torch.log(r_unlabeled_out + tiny))
+                    r_model_out = r_model(n_in)
 
-                meters.update('l_g_loss', l_g_loss.data[0])
-                meters.update('r_g_loss', r_g_loss.data[0])
+                # now just use 2 output for cifar10 dataset
+                if isinstance(r_model_out, Variable):
+                    assert args.logit_distance_cost < 0
+                    r_logit1 = r_model_out
+                else:
+                    assert len(r_model_out) == 2
+                    r_logit1, r_logit2 = r_model_out
+
+                r_class_logit, r_cons_logit = r_logit1, r_logit1
+                r_class_loss = class_criterion(r_class_logit, target_var) / minibatch_size
+
+                r_optimizer.zero_grad()
+                r_class_loss.backward()
+                r_optimizer.step()
+                if i % args.print_freq == 0:
+                    LOG.info('re_r_class_loss: {0}'.format(r_class_loss.data[0]))
+
+            elif l_ema_loss > r_ema_loss:
+                if args.arch == 'cifar_cnn13_k' or args.arch == 'cifar_cnn13_k2':
+                    l_model_out = l_model(n_in, mode='classify')
+                else:
+                    l_model_out = l_model(n_in)
+
+                # now just use 2 output for cifar10 dataset
+                if isinstance(l_model_out, Variable):
+                    assert args.logit_distance_cost < 0
+                    l_logit1 = l_model_out
+                else:
+                    assert len(l_model_out) == 2
+                    l_logit1, l_logit2 = l_model_out
+
+                l_class_logit, l_cons_logit = l_logit1, l_logit1
+                l_class_loss = class_criterion(l_class_logit, target_var) / minibatch_size
+
+                l_optimizer.zero_grad()
+                l_class_loss.backward()
+                l_optimizer.step()
 
                 if i % args.print_freq == 0:
-                    LOG.info('l_g_loss: {meters[l_g_loss]:.4f}\t'
-                            'r_g_loss: {meters[r_g_loss]:.4f}'.format(
-                            meters=meters))
-
-                l_gen_optim.zero_grad()
-                l_g_loss.backward()
-                l_gen_optim.step()
-
-                r_gen_optim.zero_grad()
-                r_g_loss.backward()
-                r_gen_optim.step()
-
-        elif args.arch == 'cifar_cnn13_k2':
-            # Train discriminator
-            l_conv_out = l_model.forward(l_input_var, mode='discriminator')
-            r_conv_out = r_model.forward(r_input_var, mode='discriminator')
-
-            l_disc_out = d_model.forward(l_conv_out)
-            r_disc_out = d_model.forward(r_conv_out)
-
-            # l, r = real, fake
-            tiny = 1e-15
-            disc_loss = -torch.mean(torch.log(l_disc_out + tiny) + torch.log(1 - r_disc_out + tiny))
-
-            if i % args.print_freq == 0:
-                LOG.info('l_disc_out: {0}'.format(list(l_disc_out.data.cpu().numpy().tolist())[:5]))
-                LOG.info('r_disc_out: {0}'.format(list(r_disc_out.data.cpu().numpy().tolist())[:5]))
-                LOG.info('l_conv_out: {0}'.format(list(l_conv_out.data.cpu().numpy().tolist())[0][0]))
-                LOG.info('r_conv_out: {0}'.format(list(r_conv_out.data.cpu().numpy().tolist())[0][0]))
-            meters.update('l_disc_loss', disc_loss.data[0])
-            meters.update('r_disc_loss', disc_loss.data[0])
-
-            l_disc_optim.zero_grad()
-            disc_loss.backward()
-            l_disc_optim.step()
-
-            if args.train_generator:
-                # Train cnn generator
-                # l, r = real, fake
-
-                tiny = 1e-15
-                l_conv_out = l_model.forward(l_input_var, mode='generator')
-                r_conv_out = r_model.forward(r_input_var, mode='generator')
-                l_disc_out = d_model.forward(l_conv_out)
-                r_disc_out = d_model.forward(r_conv_out)
-
-                js_loss = losses.js_loss(l_conv_out, r_conv_out)
-                l_g_loss = -torch.mean(torch.log(1 - l_disc_out + tiny))
-                r_g_loss = -torch.mean(torch.log(r_disc_out + tiny))
+                    LOG.info('re_l_class_loss: {0}'.format(l_class_loss.data[0]))
 
 
-                l_gen_optim.zero_grad()
-                r_gen_optim.zero_grad()
+        # if args.arch == 'cifar_cnn13_k':
+        #     # Train discriminator
+        #     # adjust_disc_learning_rate(l_disc_optim, epoch, i, len(train_loader))
+        #     # adjust_disc_learning_rate(r_disc_optim, epoch, i, len(train_loader))
 
-                js_loss.backward(retain_graph=True)
-                l_g_loss.backward()
-                r_g_loss.backward()
+        #     # TODO: try labeled, unlabeled = fake, real
+        #     # unlabeled, labeled = fake, real
+        #     l_unlabeled_out, l_labeled_out, l_z_u, l_z = l_model(l_input_var, mode='discriminator', bs=minibatch_size, lbs=labeled_minibatch_size)
+        #     r_unlabeled_out, r_labeled_out, z_u, z = r_model(r_input_var, mode='discriminator', bs=minibatch_size, lbs=labeled_minibatch_size)
 
-                l_gen_optim.step()
-                r_gen_optim.step()
+        #     tiny = 1e-15
+        #     if args.reverse_fake:
+        #         l_disc_loss = -torch.mean(torch.log(l_unlabeled_out + tiny) + torch.log(1 - l_labeled_out + tiny))
+        #         r_disc_loss = -torch.mean(torch.log(r_unlabeled_out + tiny) + torch.log(1 - r_labeled_out + tiny))
+        #     else:
+        #         l_disc_loss = -torch.mean(torch.log(l_labeled_out + tiny) + torch.log(1 - l_unlabeled_out + tiny))
+        #         r_disc_loss = -torch.mean(torch.log(r_labeled_out + tiny) + torch.log(1 - r_unlabeled_out + tiny))
 
-                meters.update('js_loss', js_loss.data[0])
-                meters.update('l_g_loss', l_g_loss.data[0])
-                meters.update('r_g_loss', r_g_loss.data[0])
+        #     if i % args.print_freq == 0:
+        #         LOG.info('l_unlabeled: {0}'.format(list(l_unlabeled_out.data.cpu().numpy().tolist())[:5]))
+        #         LOG.info('l_labeled: {0}'.format(list(l_labeled_out.data.cpu().numpy().tolist())[:5]))
+        #         LOG.info('r_unlabeled: {0}'.format(list(r_unlabeled_out.data.cpu().numpy().tolist())[:5]))
+        #         LOG.info('r_labeled: {0}'.format(list(r_labeled_out.data.cpu().numpy().tolist())[:5]))
+        #         LOG.info('unlabeled_d: {0}'.format(list(z_u.data.cpu().numpy().tolist())[0][0]))
+        #         LOG.info('labeled_d: {0}'.format(list(z.data.cpu().numpy().tolist())[0][0]))
 
-                if i % args.print_freq == 0:
-                    LOG.info(
-                        'l_g_loss: {meters[l_g_loss]:.4f}\t'
-                        'r_g_loss: {meters[r_g_loss]:.4f}\t'
-                        'js_loss: {meters[js_loss]:.4f}'.format(meters=meters))
+        #     meters.update('l_disc_loss', l_disc_loss.data[0])
+        #     meters.update('r_disc_loss', r_disc_loss.data[0])
+
+        #     l_disc_optim.zero_grad()
+        #     l_disc_loss.backward()
+        #     l_disc_optim.step()
+
+        #     r_disc_optim.zero_grad()
+        #     r_disc_loss.backward()
+        #     r_disc_optim.step()
+
+        #     if args.train_generator:
+        #         # Train cnn generator
+        #         l_unlabeled_out, l_labeled_out = l_model(l_input_var, mode='generator', bs=minibatch_size, lbs=labeled_minibatch_size)
+        #         r_unlabeled_out, r_labeled_out = r_model(r_input_var, mode='generator', bs=minibatch_size, lbs=labeled_minibatch_size)
+
+        #         tiny = 1e-15
+        #         if args.reverse_fake:
+        #             l_g_loss = -torch.mean(torch.log(l_labeled_out + tiny))
+        #             r_g_loss = -torch.mean(torch.log(r_labeled_out + tiny))
+        #         else:
+        #             # unlabeled, labeled = fake, real
+        #             l_g_loss = -torch.mean(torch.log(l_unlabeled_out + tiny))
+        #             r_g_loss = -torch.mean(torch.log(r_unlabeled_out + tiny))
+
+        #         meters.update('l_g_loss', l_g_loss.data[0])
+        #         meters.update('r_g_loss', r_g_loss.data[0])
+
+        #         if i % args.print_freq == 0:
+        #             LOG.info('l_g_loss: {meters[l_g_loss]:.4f}\t'
+        #                     'r_g_loss: {meters[r_g_loss]:.4f}'.format(
+        #                     meters=meters))
+
+        #         l_gen_optim.zero_grad()
+        #         l_g_loss.backward()
+        #         l_gen_optim.step()
+
+        #         r_gen_optim.zero_grad()
+        #         r_g_loss.backward()
+        #         r_gen_optim.step()
+
+        # elif args.arch == 'cifar_cnn13_k2':
+        #     # Train discriminator
+        #     l_conv_out = l_model.forward(l_input_var, mode='discriminator')
+        #     r_conv_out = r_model.forward(r_input_var, mode='discriminator')
+
+        #     l_disc_out = d_model.forward(l_conv_out)
+        #     r_disc_out = d_model.forward(r_conv_out)
+
+        #     # l, r = real, fake
+        #     tiny = 1e-15
+        #     disc_loss = -torch.mean(torch.log(l_disc_out + tiny) + torch.log(1 - r_disc_out + tiny))
+
+        #     if i % args.print_freq == 0:
+        #         LOG.info('l_disc_out: {0}'.format(list(l_disc_out.data.cpu().numpy().tolist())[:5]))
+        #         LOG.info('r_disc_out: {0}'.format(list(r_disc_out.data.cpu().numpy().tolist())[:5]))
+        #         LOG.info('l_conv_out: {0}'.format(list(l_conv_out.data.cpu().numpy().tolist())[0][0]))
+        #         LOG.info('r_conv_out: {0}'.format(list(r_conv_out.data.cpu().numpy().tolist())[0][0]))
+        #     meters.update('l_disc_loss', disc_loss.data[0])
+        #     meters.update('r_disc_loss', disc_loss.data[0])
+
+        #     l_disc_optim.zero_grad()
+        #     disc_loss.backward()
+        #     l_disc_optim.step()
+
+        #     if args.train_generator:
+        #         # Train cnn generator
+        #         # l, r = real, fake
+
+        #         tiny = 1e-15
+        #         l_conv_out = l_model.forward(l_input_var, mode='generator')
+        #         r_conv_out = r_model.forward(r_input_var, mode='generator')
+        #         l_disc_out = d_model.forward(l_conv_out)
+        #         r_disc_out = d_model.forward(r_conv_out)
+
+        #         js_loss = losses.js_loss(l_conv_out, r_conv_out)
+        #         l_g_loss = -torch.mean(torch.log(1 - l_disc_out + tiny))
+        #         r_g_loss = -torch.mean(torch.log(r_disc_out + tiny))
+
+
+        #         l_gen_optim.zero_grad()
+        #         r_gen_optim.zero_grad()
+
+        #         js_loss.backward(retain_graph=True)
+        #         l_g_loss.backward()
+        #         r_g_loss.backward()
+
+        #         l_gen_optim.step()
+        #         r_gen_optim.step()
+
+        #         meters.update('js_loss', js_loss.data[0])
+        #         meters.update('l_g_loss', l_g_loss.data[0])
+        #         meters.update('r_g_loss', r_g_loss.data[0])
+
+        #         if i % args.print_freq == 0:
+        #             LOG.info(
+        #                 'l_g_loss: {meters[l_g_loss]:.4f}\t'
+        #                 'r_g_loss: {meters[r_g_loss]:.4f}\t'
+        #                 'js_loss: {meters[js_loss]:.4f}'.format(meters=meters))
 
         global_step += 1
         # Net weight EMA -- not use
@@ -683,21 +745,22 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, l_disc
 
         if i % args.print_freq == 0:
             LOG.info('Epoch: [{0}][{1}/{2}]\t'
-                     'Batch-T {meters[batch_time]:.3f}\t'
+                    'Batch-T {meters[batch_time]:.3f}\t'
                     #  'Data-T {meters[data_time]:.3f}\t'
-                     'L-EMA {meters[l_ema_loss]:.4f}\t'
-                     'R-EMA {meters[r_ema_loss]:.4f}\t'
-                     'L-Class {meters[l_class_loss]:.4f}\t'
-                     'R-Class {meters[r_class_loss]:.4f}\t'
-                     'Cons {meters[cons_loss]:.4f}\t'
-                     'Better-M {better.sum:.1f}\n'
-                     'L-Prec@1 {meters[l_top1]:.3f}\t'
-                     'R-Prec@1 {meters[r_top1]:.3f}\t'
-                     'L-Prec@5 {meters[l_top5]:.3f}\t'
-                     'R-Prec@5 {meters[r_top5]:.3f}\n'
-                     'L-DISC {meters[l_disc_loss]:.4f}\t'
-                     'R-DISC {meters[r_disc_loss]:.4f}'.format(
-                     epoch, i, len(train_loader), meters=meters, better=meters['better_model']))
+                    'L-EMA {meters[l_ema_loss]:.4f}\t'
+                    'R-EMA {meters[r_ema_loss]:.4f}\t'
+                    'L-Class {meters[l_class_loss]:.4f}\t'
+                    'R-Class {meters[r_class_loss]:.4f}\t'
+                    'Cons {meters[cons_loss]:.4f}\t'
+                    'Better-M {better.sum:.1f}\n'
+                    'L-Prec@1 {meters[l_top1]:.3f}\t'
+                    'R-Prec@1 {meters[r_top1]:.3f}\t'
+                    'L-Prec@5 {meters[l_top5]:.3f}\t'
+                    'R-Prec@5 {meters[r_top5]:.3f}\n'
+                    # 'L-DISC {meters[l_disc_loss]:.4f}\t'
+                    # 'R-DISC {meters[r_disc_loss]:.4f}'
+                    .format(
+                    epoch, i, len(train_loader), meters=meters, better=meters['better_model']))
             LOG.info('\n')
 
             log.record(epoch + i / len(train_loader), {

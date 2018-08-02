@@ -99,6 +99,9 @@ def create_parser():
     parser.add_argument('--same-net-init', default=False, type=str2bool, metavar='BOOL', help='')
     parser.add_argument('--train-generator', default=False, type=str2bool, metavar='BOOL', help='')
     parser.add_argument('--draw-curve', default=False, type=str2bool, metavar='BOOL', help='')
+    parser.add_argument('--retrain-bad', default=False, type=str2bool, metavar='BOOL', help='')
+    parser.add_argument('--auto-cons-loss', default=False, type=str2bool, metavar='BOOL', help='')
+
     return parser
 
 
