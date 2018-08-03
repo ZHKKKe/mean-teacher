@@ -41,6 +41,14 @@ def softmax_kl_loss(input_logits, target_logits):
     return F.kl_div(input_log_softmax, target_softmax, size_average=False)
 
 
+def softmax_ce_loss(input_logits, target_logits):
+    input_log_softmax = F.log_softmax(input_logits, dim=1)
+    target_softmax = F.softmax(target_logits, dim=1)
+
+    return torch.sum(- target_softmax * input_log_softmax)
+    # return torch.mean(torch.sum(- target_softmax * input_log_softmax, 1))
+
+
 def symmetric_mse_loss(input1, input2):
     """Like F.mse_loss but sends gradients to both directions
 

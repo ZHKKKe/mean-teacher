@@ -258,10 +258,14 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, epoch,
         return args.consistency * sigmoid_rampup_ke(epoch, args.consistency_rampup, args.consistency_rampup_exp)
 
     class_criterion = nn.CrossEntropyLoss(size_average=False, ignore_index=NO_LABEL).cuda()
+    consistency_helper = None
     if args.consistency_type == 'mse':
         consistency_criterion = losses.softmax_mse_loss
     elif args.consistency_type == 'kl':
         consistency_criterion = losses.softmax_kl_loss
+    elif args.consistency_type == 'ce':
+        consistency_helper = losses.softmax_mse_loss
+        consistency_criterion = losses.softmax_ce_loss
     else:
         assert False, args.consistency_type
 
@@ -337,7 +341,8 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, epoch,
             if l_ema_loss < r_ema_loss:
             # if l_class_loss.data[0] < r_class_loss.data[0]:
                 l_cons_logit = Variable(l_cons_logit.detach().data, requires_grad=False)
-                consistency_loss = consistency_weight * consistency_criterion(r_cons_logit, l_cons_logit) / minibatch_size
+                consistency_loss = consistency_criterion(r_cons_logit, l_cons_logit) + consistency_helper(r_cons_logit, l_cons_logit) * 100
+                consistency_loss = consistency_weight * 0.5 * consistency_loss / minibatch_size
                 r_loss += consistency_loss
                 meters.update('better_model', -1.)  # -1 == left model
                 meters.update('cons_loss', consistency_loss.data[0])
@@ -346,7 +351,8 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, epoch,
             elif l_ema_loss > r_ema_loss:
             # elif l_class_loss.data[0] > r_class_loss.data[0]:
                 r_cons_logit = Variable(r_cons_logit.detach().data, requires_grad=False)
-                consistency_loss = consistency_weight * consistency_criterion(l_cons_logit, r_cons_logit) / minibatch_size
+                consistency_loss = consistency_criterion(l_cons_logit, r_cons_logit) + consistency_helper(l_cons_logit, r_cons_logit) * 100
+                consistency_loss = consistency_weight * 0.5 * consistency_loss / minibatch_size
                 l_loss += consistency_loss
                 meters.update('better_model', 1.)    # 1 == right model
                 meters.update('cons_loss', consistency_loss.data[0])
@@ -354,10 +360,15 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, epoch,
             else:
                 consistency_loss = 0
                 meters.update('cons_loss', 0)
+                meters.update('better_model', 0.)    # 1 == right model
+            
+            if i % args.print_freq == 0:
+                LOG.info('ce: {0}\t ems: {1}'.format(consistency_criterion(r_cons_logit, l_cons_logit).data[0], consistency_helper(r_cons_logit, l_cons_logit).data[0] * 100))
 
         else:
             consistency_loss = 0
             meters.update('cons_loss', 0)
+            meters.update('better_model', 0.)    # 1 == right model
 
 
         assert not (np.isnan(l_loss.data[0]) or l_loss.data[0] > 1e5), 'L-Loss explosion: {}'.format(l_loss.data[0])
@@ -384,6 +395,49 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, epoch,
         r_optimizer.zero_grad()
         r_loss.backward()
         r_optimizer.step()
+
+        if args.retrain_bad:
+            if l_ema_loss < r_ema_loss:
+                r_model_out = r_model(l_input_var)
+
+                # now just use 2 output for cifar10 dataset
+                if isinstance(r_model_out, Variable):
+                    assert args.logit_distance_cost < 0
+                    r_logit1 = r_model_out
+                else:
+                    assert len(r_model_out) == 2
+                    r_logit1, r_logit2 = r_model_out
+
+                r_class_logit, r_cons_logit = r_logit1, r_logit1
+                r_class_loss = class_criterion(r_class_logit, target_var) / minibatch_size
+
+                r_optimizer.zero_grad()
+                r_class_loss.backward()
+                r_optimizer.step()
+                if i % args.print_freq == 0:
+                    LOG.info('re_r_class_loss: {0}'.format(r_class_loss.data[0]))
+
+            elif l_ema_loss > r_ema_loss:
+                l_model_out = l_model(r_input_var)
+
+                # now just use 2 output for cifar10 dataset
+                if isinstance(l_model_out, Variable):
+                    assert args.logit_distance_cost < 0
+                    l_logit1 = l_model_out
+                else:
+                    assert len(l_model_out) == 2
+                    l_logit1, l_logit2 = l_model_out
+
+                l_class_logit, l_cons_logit = l_logit1, l_logit1
+                l_class_loss = class_criterion(l_class_logit, target_var) / minibatch_size
+
+                l_optimizer.zero_grad()
+                l_class_loss.backward()
+                l_optimizer.step()
+
+                if i % args.print_freq == 0:
+                    LOG.info('re_l_class_loss: {0}'.format(l_class_loss.data[0]))
+
 
         global_step += 1
         meters.update('batch_time', time.time() - end)
@@ -427,6 +481,11 @@ def main(context):
     train_loader, eval_loader = create_data_loaders(**dataset_config, args=args)
     l_model = create_compite_model(side='l', num_classes=num_classes)
     r_model = create_compite_model(side='r', num_classes=num_classes)
+
+    if args.same_net_init:
+        LOG.info('same net init.')
+        for l_param, r_param in zip(l_model.parameters(), r_model.parameters()):
+            r_param.data.mul_(0.0).add_(l_param.data)
 
     LOG.info(parameters_string(l_model))
     LOG.info(parameters_string(r_model))

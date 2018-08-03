@@ -65,7 +65,7 @@ def create_parser():
     parser.add_argument('--consistency', default=None, type=float, metavar='WEIGHT',
                         help='use consistency loss with given weight (default: None)')
     parser.add_argument('--consistency-type', default="mse", type=str, metavar='TYPE',
-                        choices=['mse', 'kl'],
+                        choices=['mse', 'kl', 'ce'],
                         help='consistency loss type to use')
     parser.add_argument('--consistency-rampup', default=30, type=int, metavar='EPOCHS',
                         help='length of the consistency loss ramp-up')
@@ -89,7 +89,11 @@ def create_parser():
                         help='loss moving average of competitive-buddy, set 0 to close it')
     parser.add_argument('--epoch-init-ema-loss', default=True, type=str2bool, metavar='BOOL',
                         help='')
-    
+
+    parser.add_argument('--same-net-init', default=False, type=str2bool, metavar='BOOL',
+                        help='')
+    parser.add_argument('--retrain-bad', default=False, type=str2bool, metavar='BOOL',
+                        help='')
     return parser
 
 
