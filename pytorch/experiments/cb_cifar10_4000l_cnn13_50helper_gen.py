@@ -35,7 +35,7 @@ def parameters():
         'consistency_rampup': 5,
         'consistency': 1,
 
-        'cons_helper': 10,
+        'cons_helper': 50,
 
         'logit_distance_cost': -1,
         'weight_decay': 1e-4,
@@ -50,6 +50,11 @@ def parameters():
         'epoch_init_ema_loss': False,
         'same_net_init': False,
         'retrain_bad': False,
+
+        'disc': True,
+        'train_gen': True,
+        'disc_lr': 0.00005,
+        'gen_lr': 0.0001,
     }
 
     # 4000 labels:

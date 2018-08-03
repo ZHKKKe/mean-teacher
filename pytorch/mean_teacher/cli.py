@@ -96,6 +96,12 @@ def create_parser():
                         help='')
     parser.add_argument('--cons-helper', default=0.0, type=float, metavar='ALPHA',
                         help='')
+    parser.add_argument('--disc', default=False, type=str2bool, metavar='BOOL', help='')
+    parser.add_argument('--train-gen', default=False, type=str2bool, metavar='BOOL', help='')
+
+    parser.add_argument('--disc-lr', default=0.0, type=float, metavar='DISCLR', help='')
+    parser.add_argument('--gen-lr', default=0.0, type=float, metavar='GENLR', help='')
+
     return parser
 
 

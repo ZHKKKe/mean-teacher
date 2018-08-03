@@ -319,11 +319,11 @@ class ShiftConvDownsample(nn.Module):
 
 
 class GaussianNoise(nn.Module):
-    
+
     def __init__(self, std):
         super(GaussianNoise, self).__init__()
         self.std = std
-    
+
     def forward(self, x):
         zeros_ = torch.zeros(x.size()).cuda()
         n = Variable(torch.normal(zeros_, std=self.std).cuda())
@@ -336,12 +336,81 @@ class CNN13(nn.Module):
     """
     CNN from Mean Teacher paper
     """
-    
+
     def __init__(self, num_classes=10):
         super(CNN13, self).__init__()
+        self.conv = CNN13_CONV()
+        self.fc = CNN13_FC(num_classes)
+        self.disc = CNN13_Disc(num_classes)
 
+    def set_mode(self, mode):
+        if mode in ['classify', 'generator']:
+            for param in self.conv.parameters():
+                param.requires_grad = True
+            for param in self.fc.parameters():
+                param.requires_grad = True
+            for param in self.disc.parameters():
+                param.requires_grad = False
+            self.conv.train(mode=True)
+            self.fc.train(mode=True)
+            self.disc.train(mode=False)
+        elif mode in ['discriminator']:
+            for param in self.conv.parameters():
+                param.requires_grad = False
+            for param in self.fc.parameters():
+                param.requires_grad = False
+            for param in self.disc.parameters():
+                param.requires_grad = True
+            self.conv.train(mode=False)
+            self.fc.train(mode=False)
+            self.disc.train(mode=True)
+        elif mode in ['validate']:
+            for param in self.conv.parameters():
+                param.requires_grad = False
+            for param in self.fc.parameters():
+                param.requires_grad = False
+            for param in self.disc.parameters():
+                param.requires_grad = False
+            self.conv.train(mode=False)
+            self.fc.train(mode=False)
+            self.disc.train(mode=False)
+        else:
+            LOG.info('Unknown CNN13 mode.')
+            exit(1)
+
+    def forward(self, x, mode, bs=0, lbs=0):
+        self.set_mode(mode)
+
+        if mode in ['classify', 'validate']:
+            x = self.conv.forward(x)
+            return self.fc.forward(x)
+        elif mode in ['discriminator', 'generator']:
+            assert bs == lbs * 2
+            x = x.split(lbs)
+
+            z_unlabeled = self.conv.forward(x[0])
+            o_unlabeled, _ = self.fc.forward(z_unlabeled)
+
+            z_labeled = self.conv.forward(x[1])
+            o_labeled, _ = self.fc.forward(z_labeled)
+
+            d_unlabeled = self.disc.forward(o_unlabeled)
+            d_labeled = self.disc.forward(o_labeled)
+            return d_unlabeled, d_labeled
+        else:
+            LOG.info('Unknown CNN13 mode.')
+            exit(1)
+
+
+class CNN13_CONV(nn.Module):
+    """
+    CNN from Mean Teacher paper
+    """
+    def __init__(self):
+        super(CNN13_CONV, self).__init__()
         self.gn = GaussianNoise(0.15)
         self.activation = nn.LeakyReLU(0.1)
+
         self.conv1a = weight_norm(nn.Conv2d(3, 128, 3, padding=1))
         self.bn1a = nn.BatchNorm2d(128)
         self.conv1b = weight_norm(nn.Conv2d(128, 128, 3, padding=1))
@@ -349,8 +418,8 @@ class CNN13(nn.Module):
         self.conv1c = weight_norm(nn.Conv2d(128, 128, 3, padding=1))
         self.bn1c = nn.BatchNorm2d(128)
         self.mp1 = nn.MaxPool2d(2, stride=2, padding=0)
-        self.drop1  = nn.Dropout(0.5)
-        
+        self.drop1 = nn.Dropout(0.5)
+
         self.conv2a = weight_norm(nn.Conv2d(128, 256, 3, padding=1))
         self.bn2a = nn.BatchNorm2d(256)
         self.conv2b = weight_norm(nn.Conv2d(256, 256, 3, padding=1))
@@ -358,8 +427,8 @@ class CNN13(nn.Module):
         self.conv2c = weight_norm(nn.Conv2d(256, 256, 3, padding=1))
         self.bn2c = nn.BatchNorm2d(256)
         self.mp2 = nn.MaxPool2d(2, stride=2, padding=0)
-        self.drop2  = nn.Dropout(0.5)
-        
+        self.drop2 = nn.Dropout(0.5)
+
         self.conv3a = weight_norm(nn.Conv2d(256, 512, 3, padding=0))
         self.bn3a = nn.BatchNorm2d(512)
         self.conv3b = weight_norm(nn.Conv2d(512, 256, 1, padding=0))
@@ -367,27 +436,51 @@ class CNN13(nn.Module):
         self.conv3c = weight_norm(nn.Conv2d(256, 128, 1, padding=0))
         self.bn3c = nn.BatchNorm2d(128)
         self.ap3 = nn.AvgPool2d(6, stride=2, padding=0)
-        
-        self.fc1 =  weight_norm(nn.Linear(128, num_classes))
-        self.fc2 =  weight_norm(nn.Linear(128, num_classes))
-    
-    def forward(self, x, debug=False):
+
+    def forward(self, x):
         x = self.activation(self.bn1a(self.conv1a(x)))
         x = self.activation(self.bn1b(self.conv1b(x)))
         x = self.activation(self.bn1c(self.conv1c(x)))
         x = self.mp1(x)
         x = self.drop1(x)
-        
+
         x = self.activation(self.bn2a(self.conv2a(x)))
         x = self.activation(self.bn2b(self.conv2b(x)))
         x = self.activation(self.bn2c(self.conv2c(x)))
         x = self.mp2(x)
         x = self.drop2(x)
-        
+
         x = self.activation(self.bn3a(self.conv3a(x)))
         x = self.activation(self.bn3b(self.conv3b(x)))
         x = self.activation(self.bn3c(self.conv3c(x)))
         x = self.ap3(x)
- 
+
         x = x.view(-1, 128)
+        return x
+
+
+class CNN13_FC(nn.Module):
+    def __init__(self, num_classes=10):
+        super(CNN13_FC, self).__init__()
+
+        self.fc1 = weight_norm(nn.Linear(128, num_classes))
+        self.fc2 = weight_norm(nn.Linear(128, num_classes))
+
+    def forward(self, x):
         return self.fc1(x), self.fc2(x)
+
+
+class CNN13_Disc(nn.Module):
+    def __init__(self, input_channels=10):
+        super(CNN13_Disc, self).__init__()
+        self.disc1 = nn.Linear(input_channels, 1024)
+        self.disc2 = nn.Linear(1024, 1024)
+        self.disc3 = nn.Linear(1024, 1)
+
+    def forward(self, x):
+        x = self.disc1(x)
+        x = F.relu(x)
+        x = self.disc2(x)
+        x = F.relu(x)
+
+        return F.sigmoid(self.disc3(x))

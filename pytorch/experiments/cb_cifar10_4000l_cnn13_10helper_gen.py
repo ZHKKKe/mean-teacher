@@ -50,6 +50,11 @@ def parameters():
         'epoch_init_ema_loss': False,
         'same_net_init': False,
         'retrain_bad': False,
+
+        'disc': True,
+        'train_gen': True,
+        'disc_lr': 0.00005,
+        'gen_lr': 0.0001,
     }
 
     # 4000 labels:

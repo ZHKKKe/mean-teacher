@@ -31,7 +31,7 @@ l_ema_loss = 0
 r_ema_loss = 0
 
 
-def create_compite_model(side, num_classes):
+def create_compete_model(side, num_classes):
     LOG.info('=> creating {pretrained} {side} model: {arch}'.format(
         pretrained='pre-trained' if args.pretrained else 'non-pre-trained',
         side=side,
@@ -39,9 +39,9 @@ def create_compite_model(side, num_classes):
 
     model_factory = architectures.__dict__[args.arch]
     model_params = dict(pretrained=args.pretrained, num_classes=num_classes)
-    model = model_factory(**model_params)
-    model = nn.DataParallel(model).cuda()
-    return model
+    model_module = model_factory(**model_params)
+    model = nn.DataParallel(model_module).cuda()
+    return model, model_module
 
 
 def create_data_loaders(train_transformation, eval_transformation, datadir, args):
@@ -148,7 +148,7 @@ def validate(eval_loader, model, log, global_step, epoch):
         meters.update('labeled_minibatch_size', labeled_minibatch_size)
 
         # compute output
-        output1, output2 = model(input_var)
+        output1, output2 = model(input_var, mode='validate')
         softmax1, softmax2 = F.softmax(
             output1, dim=1), F.softmax(
                 output2, dim=1)
@@ -207,8 +207,8 @@ def calculate_train_ema_loss(train_loader, l_model, r_model):
         labeled_minibatch_size = target_var.data.ne(NO_LABEL).sum()
         assert labeled_minibatch_size > 0
 
-        l_model_out = l_model(l_input_var)
-        r_model_out = r_model(r_input_var)
+        l_model_out = l_model(l_input_var, mode='validate')
+        r_model_out = r_model(r_input_var, mode='validate')
 
         if isinstance(l_model_out, Variable):
             assert args.logit_distance_cost < 0
@@ -240,7 +240,7 @@ def calculate_train_ema_loss(train_loader, l_model, r_model):
 
     return meters['l_class_loss'].avg, meters['r_class_loss'].avg
 
-def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, epoch, log):
+def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, l_disc_optim, r_disc_optim, l_gen_optim, r_gen_optim, epoch, log):
     global global_step
     global l_ema_loss
     global r_ema_loss
@@ -301,8 +301,8 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, epoch,
         assert labeled_minibatch_size > 0
         meters.update('labeled_minibatch_size', labeled_minibatch_size)
 
-        l_model_out = l_model(l_input_var)
-        r_model_out = r_model(r_input_var)
+        l_model_out = l_model(l_input_var, mode='classify')
+        r_model_out = r_model(r_input_var, mode='classify')
 
         # now just use 2 output for cifar10 dataset
         if isinstance(l_model_out, Variable):
@@ -400,7 +400,7 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, epoch,
 
         if args.retrain_bad:
             if l_ema_loss < r_ema_loss:
-                r_model_out = r_model(l_input_var)
+                r_model_out = r_model(l_input_var, mode='classify')
 
                 # now just use 2 output for cifar10 dataset
                 if isinstance(r_model_out, Variable):
@@ -420,7 +420,7 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, epoch,
                     LOG.info('re_r_class_loss: {0}'.format(r_class_loss.data[0]))
 
             elif l_ema_loss > r_ema_loss:
-                l_model_out = l_model(r_input_var)
+                l_model_out = l_model(r_input_var, mode='classify')
 
                 # now just use 2 output for cifar10 dataset
                 if isinstance(l_model_out, Variable):
@@ -440,6 +440,54 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, epoch,
                 if i % args.print_freq == 0:
                     LOG.info('re_l_class_loss: {0}'.format(l_class_loss.data[0]))
 
+        if args.disc:
+            tiny = 1e-15
+
+            l_unlabeled_out, l_labeled_out = l_model(l_input_var, mode='discriminator', bs=minibatch_size, lbs=labeled_minibatch_size)
+            r_unlabeled_out, r_labeled_out = r_model(r_input_var, mode='discriminator', bs=minibatch_size, lbs=labeled_minibatch_size)
+
+            l_disc_loss = -torch.mean(torch.log(l_labeled_out + tiny) + torch.log(1 - l_unlabeled_out + tiny))
+            r_disc_loss = -torch.mean(torch.log(r_labeled_out + tiny) + torch.log(1 - r_unlabeled_out + tiny))
+
+            meters.update('l_disc_loss', l_disc_loss.data[0])
+            meters.update('r_disc_loss', r_disc_loss.data[0])
+            if i % args.print_freq == 0:
+                LOG.info('l_unlabeled: {0}'.format(list(l_unlabeled_out.data.cpu().numpy().tolist())[:5]))
+                LOG.info('l_labeled: {0}'.format(list(l_labeled_out.data.cpu().numpy().tolist())[:5]))
+                LOG.info('r_unlabeled: {0}'.format(list(r_unlabeled_out.data.cpu().numpy().tolist())[:5]))
+                LOG.info('r_labeled: {0}'.format(list(r_labeled_out.data.cpu().numpy().tolist())[:5]))
+                LOG.info('l_disc_loss: {meters[l_disc_loss]:.4f}\t r_disc_loss: {meters[r_disc_loss]:.4f}'.format(meters=meters))
+
+            l_disc_optim.zero_grad()
+            l_disc_loss.backward()
+            l_disc_optim.step()
+
+            r_disc_optim.zero_grad()
+            r_disc_loss.backward()
+            r_disc_optim.step()
+
+            if args.train_gen:
+                l_unlabeled_out, l_labeled_out = l_model(l_input_var, mode='generator', bs=minibatch_size, lbs=labeled_minibatch_size)
+                r_unlabeled_out, r_labeled_out = r_model(r_input_var, mode='generator', bs=minibatch_size, lbs=labeled_minibatch_size)
+
+                l_gen_loss = -torch.mean(torch.log(l_unlabeled_out + tiny))
+                r_gen_loss = -torch.mean(torch.log(r_unlabeled_out + tiny))
+
+                meters.update('l_gen_loss', l_gen_loss.data[0])
+                meters.update('r_gen_loss', r_gen_loss.data[0])
+
+                if i % args.print_freq == 0:
+                    LOG.info('l_g_loss: {meters[l_gen_loss]:.4f}\t'
+                             'r_g_loss: {meters[r_gen_loss]:.4f}'.format(
+                                 meters=meters))
+
+                l_gen_optim.zero_grad()
+                l_gen_loss.backward()
+                l_gen_optim.step()
+
+                r_gen_optim.zero_grad()
+                r_gen_loss.backward()
+                r_gen_optim.step()
 
         global_step += 1
         meters.update('batch_time', time.time() - end)
@@ -481,8 +529,8 @@ def main(context):
     dataset_config = datasets.__dict__[args.dataset]()
     num_classes = dataset_config.pop('num_classes')
     train_loader, eval_loader = create_data_loaders(**dataset_config, args=args)
-    l_model = create_compite_model(side='l', num_classes=num_classes)
-    r_model = create_compite_model(side='r', num_classes=num_classes)
+    l_model, l_model_module = create_compete_model(side='l', num_classes=num_classes)
+    r_model, r_model_module = create_compete_model(side='r', num_classes=num_classes)
 
     if args.same_net_init:
         LOG.info('same net init.')
@@ -492,16 +540,31 @@ def main(context):
     LOG.info(parameters_string(l_model))
     LOG.info(parameters_string(r_model))
 
-    l_optimizer = torch.optim.SGD(params=l_model.parameters(),
-                                  lr=args.lr,
-                                  momentum=args.momentum,
-                                  weight_decay=args.weight_decay,
-                                  nesterov=args.nesterov)
-    r_optimizer = torch.optim.SGD(params=r_model.parameters(),
-                                  lr=args.lr,
-                                  momentum=args.momentum,
-                                  weight_decay=args.weight_decay,
-                                  nesterov=args.nesterov)
+    l_optimizer = torch.optim.SGD([
+        {'params': l_model_module.conv.parameters(), 'lr': args.lr},
+        {'params': l_model_module.fc.parameters(), 'lr': args.lr}],
+        lr=args.lr, momentum=args.momentum,
+        weight_decay=args.weight_decay,
+        nesterov=args.nesterov)
+
+    r_optimizer = torch.optim.SGD([
+        {'params': r_model_module.conv.parameters(), 'lr': args.lr},
+        {'params': r_model_module.fc.parameters(), 'lr': args.lr}],
+        lr=args.lr, momentum=args.momentum,
+        weight_decay=args.weight_decay,
+        nesterov=args.nesterov)
+
+    l_disc_optim = torch.optim.Adam(params=l_model_module.disc.parameters(), lr=args.disc_lr)
+    r_disc_optim = torch.optim.Adam(params=r_model_module.disc.parameters(), lr=args.disc_lr)
+
+    l_gen_optim = torch.optim.Adam([
+        {'params': l_model_module.conv.parameters(), 'lr':args.gen_lr},
+        {'params': l_model_module.fc.parameters(), 'lr':args.gen_lr}],
+        lr=args.gen_lr)
+    r_gen_optim = torch.optim.Adam([
+        {'params': r_model_module.conv.parameters(), 'lr':args.gen_lr},
+        {'params': r_model_module.fc.parameters(), 'lr':args.gen_lr}],
+        lr=args.gen_lr)
 
     if args.resume:
         assert os.path.isfile(args.resume), '=> no checkpoint found at: {}'.format(args.resume)
@@ -532,7 +595,7 @@ def main(context):
     for epoch in range(args.start_epoch, args.epochs):
         start_time = time.time()
         # train for one epoch
-        train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, epoch, training_log)
+        train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, l_disc_optim, r_disc_optim, l_gen_optim, r_gen_optim, epoch, training_log)
         LOG.info('--- training epoch in {} seconds ---'.format(time.time()-start_time))
 
         is_best = False
