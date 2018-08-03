@@ -94,6 +94,8 @@ def create_parser():
                         help='')
     parser.add_argument('--retrain-bad', default=False, type=str2bool, metavar='BOOL',
                         help='')
+    parser.add_argument('--cons-helper', default=0.0, type=float, metavar='ALPHA',
+                        help='')
     return parser
 
 

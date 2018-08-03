@@ -193,10 +193,10 @@ def calculate_train_ema_loss(train_loader, l_model, r_model):
     LOG.info('Calculate train ema loss initial value.')
     class_criterion = nn.CrossEntropyLoss(size_average=False, ignore_index=NO_LABEL).cuda()
     meters = AverageMeterSet()
-    
+
     l_model.eval()
     r_model.eval()
-    
+
     end = time.time()
     for i, ((l_input, r_input), target) in enumerate(train_loader):
         l_input_var = torch.autograd.Variable(l_input, volatile=True)
@@ -260,8 +260,10 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, epoch,
     class_criterion = nn.CrossEntropyLoss(size_average=False, ignore_index=NO_LABEL).cuda()
     consistency_helper = None
     if args.consistency_type == 'mse':
+        consistency_helper = losses.softmax_mse_loss
         consistency_criterion = losses.softmax_mse_loss
     elif args.consistency_type == 'kl':
+        consistency_helper = losses.softmax_kl_loss
         consistency_criterion = losses.softmax_kl_loss
     elif args.consistency_type == 'ce':
         consistency_helper = losses.softmax_mse_loss
@@ -327,7 +329,7 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, epoch,
         l_loss, r_loss = l_class_loss, r_class_loss
 
         # update ema loss values
-        l_ema_loss = (1 - args.ema_loss) * l_class_loss.data[0] + args.ema_loss * l_ema_loss 
+        l_ema_loss = (1 - args.ema_loss) * l_class_loss.data[0] + args.ema_loss * l_ema_loss
         r_ema_loss = (1 - args.ema_loss) * r_class_loss.data[0] + args.ema_loss * r_ema_loss
         meters.update('l_ema_loss', l_ema_loss)
         meters.update('r_ema_loss', r_ema_loss)
@@ -339,9 +341,9 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, epoch,
 
             # left model is better
             if l_ema_loss < r_ema_loss:
-            # if l_class_loss.data[0] < r_class_loss.data[0]:
+                # if l_class_loss.data[0] < r_class_loss.data[0]:
                 l_cons_logit = Variable(l_cons_logit.detach().data, requires_grad=False)
-                consistency_loss = consistency_criterion(r_cons_logit, l_cons_logit) + consistency_helper(r_cons_logit, l_cons_logit) * 100
+                consistency_loss = consistency_criterion(r_cons_logit, l_cons_logit) + consistency_helper(r_cons_logit, l_cons_logit) * args.cons_helper
                 consistency_loss = consistency_weight * 0.5 * consistency_loss / minibatch_size
                 r_loss += consistency_loss
                 meters.update('better_model', -1.)  # -1 == left model
@@ -349,9 +351,9 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, epoch,
 
             # right model is better
             elif l_ema_loss > r_ema_loss:
-            # elif l_class_loss.data[0] > r_class_loss.data[0]:
+                # elif l_class_loss.data[0] > r_class_loss.data[0]:
                 r_cons_logit = Variable(r_cons_logit.detach().data, requires_grad=False)
-                consistency_loss = consistency_criterion(l_cons_logit, r_cons_logit) + consistency_helper(l_cons_logit, r_cons_logit) * 100
+                consistency_loss = consistency_criterion(l_cons_logit, r_cons_logit) + consistency_helper(l_cons_logit, r_cons_logit) * args.cons_helper
                 consistency_loss = consistency_weight * 0.5 * consistency_loss / minibatch_size
                 l_loss += consistency_loss
                 meters.update('better_model', 1.)    # 1 == right model
@@ -361,9 +363,9 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, epoch,
                 consistency_loss = 0
                 meters.update('cons_loss', 0)
                 meters.update('better_model', 0.)    # 1 == right model
-            
+
             if i % args.print_freq == 0:
-                LOG.info('ce: {0}\t ems: {1}'.format(consistency_criterion(r_cons_logit, l_cons_logit).data[0], consistency_helper(r_cons_logit, l_cons_logit).data[0] * 100))
+                LOG.info('ce: {0}\t ems: {1}'.format(consistency_criterion(r_cons_logit, l_cons_logit).data[0], consistency_helper(r_cons_logit, l_cons_logit).data[0] * args.cons_helper))
 
         else:
             consistency_loss = 0
@@ -525,7 +527,7 @@ def main(context):
         validate(eval_loader, r_model, r_validation_log, global_step, args.start_epoch)
         return
 
-    l_ema_loss, r_ema_loss = calculate_train_ema_loss(train_loader, l_model, r_model)
+    # l_ema_loss, r_ema_loss = calculate_train_ema_loss(train_loader, l_model, r_model)
 
     for epoch in range(args.start_epoch, args.epochs):
         start_time = time.time()

@@ -32,7 +32,7 @@ def parameters():
 
         # Costs
         'consistency_type': 'ce',
-        'consistency_rampup': 5,
+        'consistency_rampup': 0,
         'consistency': 1,
 
         'cons_helper': 10,
