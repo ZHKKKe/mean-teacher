@@ -30,6 +30,18 @@ global_step = 0
 l_ema_loss = 0
 r_ema_loss = 0
 
+def update_ema_variables(model, ema_model, alpha, global_step):
+    # Use the true average until the exponential average is more correct
+    alpha = min(1 - 1 / (global_step + 1), alpha)
+    for ema_param, param in zip(ema_model.parameters(), model.parameters()):
+        ema_param.data.mul_(alpha).add_(1 - alpha, param.data)
+
+
+def copy_model_variables(source_model, target_model):
+    target_model.load_state_dict(source_model.state_dict())
+    # for source_param, target_param in zip(source_model.parameters(), target_model.parameters()):
+        # target_param.data.mul_(0.0).add_(source_param.data)
+
 
 def create_compite_model(side, num_classes):
     LOG.info('=> creating {pretrained} {side} model: {arch}'.format(
@@ -240,7 +252,7 @@ def calculate_train_ema_loss(train_loader, l_model, r_model):
 
     return meters['l_class_loss'].avg, meters['r_class_loss'].avg
 
-def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, epoch, log):
+def train_epoch(train_loader, l_model, r_model, t_model, l_optimizer, r_optimizer, epoch, log, last_better_model):
     global global_step
     global l_ema_loss
     global r_ema_loss
@@ -275,7 +287,8 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, epoch,
 
     l_model.train()
     r_model.train()
-
+    t_model.train()
+    
     end = time.time()
     for i, ((l_input, r_input), target) in enumerate(train_loader):
         meters.update('data_time', time.time() - end)
@@ -295,116 +308,228 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, epoch,
         assert labeled_minibatch_size > 0
         meters.update('labeled_minibatch_size', labeled_minibatch_size)
 
-        l_model_out = l_model(l_input_var)
-        r_model_out = r_model(r_input_var)
+        if epoch == 0:
+            l_model_out = l_model(l_input_var)
+            r_model_out = r_model(r_input_var)
+            
+            # now just use 2 output for cifar10 dataset
+            if isinstance(l_model_out, Variable):
+                assert args.logit_distance_cost < 0
+                l_logit1 = l_model_out
+                r_logit1 = r_model_out
+            else:
+                assert len(l_model_out) == 2
+                assert len(r_model_out) == 2
+                l_logit1, l_logit2 = l_model_out
+                r_logit1, r_logit2 = r_model_out
 
-        # now just use 2 output for cifar10 dataset
-        if isinstance(l_model_out, Variable):
-            assert args.logit_distance_cost < 0
-            l_logit1 = l_model_out
-            r_logit1 = r_model_out
-        else:
-            assert len(l_model_out) == 2
-            assert len(r_model_out) == 2
-            l_logit1, l_logit2 = l_model_out
-            r_logit1, r_logit2 = r_model_out
+            if args.logit_distance_cost >= 0:
+                LOG.error('compite_buddy not support logit_distance_cost now.')
 
-        if args.logit_distance_cost >= 0:
-            LOG.error('compite_buddy not support logit_distance_cost now.')
+            l_class_logit, l_cons_logit = l_logit1, l_logit1
+            r_class_logit, r_cons_logit = r_logit1, r_logit1
 
-        l_class_logit, l_cons_logit = l_logit1, l_logit1
-        r_class_logit, r_cons_logit = r_logit1, r_logit1
+            l_class_loss = class_criterion(l_class_logit, target_var) / minibatch_size
+            r_class_loss = class_criterion(r_class_logit, target_var) / minibatch_size
+            meters.update('l_class_loss', l_class_loss.data[0])
+            meters.update('r_class_loss', r_class_loss.data[0])
 
-        l_class_loss = class_criterion(l_class_logit, target_var) / minibatch_size
-        r_class_loss = class_criterion(r_class_logit, target_var) / minibatch_size
-        meters.update('l_class_loss', l_class_loss.data[0])
-        meters.update('r_class_loss', r_class_loss.data[0])
+            l_loss, r_loss = l_class_loss, r_class_loss
 
-        l_loss, r_loss = l_class_loss, r_class_loss
+            # update ema loss values
+            l_ema_loss = (1 - args.ema_loss) * l_class_loss.data[0] + args.ema_loss * l_ema_loss 
+            r_ema_loss = (1 - args.ema_loss) * r_class_loss.data[0] + args.ema_loss * r_ema_loss
+            meters.update('l_ema_loss', l_ema_loss)
+            meters.update('r_ema_loss', r_ema_loss)
 
-        # update ema loss values
-        l_ema_loss = (1 - args.ema_loss) * l_class_loss.data[0] + args.ema_loss * l_ema_loss 
-        r_ema_loss = (1 - args.ema_loss) * r_class_loss.data[0] + args.ema_loss * r_ema_loss
-        meters.update('l_ema_loss', l_ema_loss)
-        meters.update('r_ema_loss', r_ema_loss)
+            consistency_loss = 0
+            if args.consistency:
+                consistency_weight = calculate_consistency_scale(epoch)
+                meters.update('cons_weight', consistency_weight)
 
-        consistency_loss = 0
-        if args.consistency:
-            consistency_weight = calculate_consistency_scale(epoch)
-            meters.update('cons_weight', consistency_weight)
+                # left model is better
+                if l_ema_loss < r_ema_loss:
+                # if l_class_loss.data[0] < r_class_loss.data[0]:
+                    l_cons_logit = Variable(l_cons_logit.detach().data, requires_grad=False)
+                    consistency_loss = consistency_weight * consistency_criterion(r_cons_logit, l_cons_logit) / minibatch_size
+                    r_loss += consistency_loss
+                    meters.update('better_model', -1.)  # -1 == left model
+                    meters.update('cons_loss', consistency_loss.data[0])
 
-            # left model is better
-            if l_ema_loss < r_ema_loss:
-            # if l_class_loss.data[0] < r_class_loss.data[0]:
-                l_cons_logit = Variable(l_cons_logit.detach().data, requires_grad=False)
-                consistency_loss = consistency_weight * consistency_criterion(r_cons_logit, l_cons_logit) / minibatch_size
-                r_loss += consistency_loss
-                meters.update('better_model', -1.)  # -1 == left model
-                meters.update('cons_loss', consistency_loss.data[0])
+                # right model is better
+                elif l_ema_loss > r_ema_loss:
+                # elif l_class_loss.data[0] > r_class_loss.data[0]:
+                    r_cons_logit = Variable(r_cons_logit.detach().data, requires_grad=False)
+                    consistency_loss = consistency_weight * consistency_criterion(l_cons_logit, r_cons_logit) / minibatch_size
+                    l_loss += consistency_loss
+                    meters.update('better_model', 1.)    # 1 == right model
+                    meters.update('cons_loss', consistency_loss.data[0])
 
-            # right model is better
-            elif l_ema_loss > r_ema_loss:
-            # elif l_class_loss.data[0] > r_class_loss.data[0]:
-                r_cons_logit = Variable(r_cons_logit.detach().data, requires_grad=False)
-                consistency_loss = consistency_weight * consistency_criterion(l_cons_logit, r_cons_logit) / minibatch_size
-                l_loss += consistency_loss
-                meters.update('better_model', 1.)    # 1 == right model
-                meters.update('cons_loss', consistency_loss.data[0])
+                else:
+                    consistency_loss = 0
+                    meters.update('cons_loss', 0)
 
             else:
                 consistency_loss = 0
                 meters.update('cons_loss', 0)
 
+
+            assert not (np.isnan(l_loss.data[0]) or l_loss.data[0] > 1e5), 'L-Loss explosion: {}'.format(l_loss.data[0])
+            assert not (np.isnan(r_loss.data[0]) or r_loss.data[0] > 1e5), 'R-Loss explosion: {}'.format(r_loss.data[0])
+            meters.update('l_loss', l_loss.data[0])
+            meters.update('r_loss', r_loss.data[0])
+
+            l_prec1, l_prec5 = accuracy(l_class_logit.data, target_var.data, topk=(1, 5))
+            meters.update('l_top1', l_prec1[0], labeled_minibatch_size)
+            meters.update('l_error1', 100. - l_prec1[0], labeled_minibatch_size)
+            meters.update('l_top5', l_prec5[0], labeled_minibatch_size)
+            meters.update('l_error5', 100. - l_prec5[0], labeled_minibatch_size)
+
+            r_prec1, r_prec5 = accuracy(r_class_logit.data, target_var.data, topk=(1, 5))
+            meters.update('r_top1', r_prec1[0], labeled_minibatch_size)
+            meters.update('r_error1', 100. - r_prec1[0], labeled_minibatch_size)
+            meters.update('r_top5', r_prec5[0], labeled_minibatch_size)
+            meters.update('r_error5', 100. - r_prec5[0], labeled_minibatch_size)
+
+            l_optimizer.zero_grad()
+            l_loss.backward()
+            l_optimizer.step()
+
+            r_optimizer.zero_grad()
+            r_loss.backward()
+            r_optimizer.step()
+
         else:
+            l_model_out = l_model(l_input_var)
+            r_model_out = r_model(r_input_var)
+
+            if last_better_model == 'l':
+                t_model_out = t_model(r_input_var)
+            elif last_better_model == 'r':
+                t_model_out = t_model(l_input_var)
+            
+            if isinstance(l_model_out, Variable):
+                assert args.logit_distance_cost < 0
+                l_logit1 = l_model_out
+                r_logit1 = r_model_out
+                t_logit1 = t_model_out
+            else:
+                assert len(l_model_out) == 2
+                assert len(r_model_out) == 2
+                assert len(t_model_out) == 2
+                l_logit1, l_logit2 = l_model_out
+                r_logit1, r_logit2 = r_model_out
+                t_logit1, t_logit2 = t_model_out
+
+            l_class_logit, l_cons_logit = l_logit1, l_logit1
+            r_class_logit, r_cons_logit = r_logit1, r_logit1
+            t_class_logit, t_cons_logit = t_logit1, t_logit1
+
+            l_class_loss = class_criterion(l_class_logit, target_var) / minibatch_size
+            r_class_loss = class_criterion(r_class_logit, target_var) / minibatch_size
+            meters.update('l_class_loss', l_class_loss.data[0])
+            meters.update('r_class_loss', r_class_loss.data[0])
+
+            l_loss, r_loss = l_class_loss, r_class_loss
+            
+            # consistency loss
             consistency_loss = 0
-            meters.update('cons_loss', 0)
+            if args.consistency:
+                consistency_weight = calculate_consistency_scale(epoch)
+                meters.update('cons_weight', consistency_weight)
 
+                t_cons_logit = Variable(t_cons_logit.detach().data, requires_grad=False)
+                if last_better_model == 'l':
+                    consistency_loss = consistency_weight * consistency_criterion(r_cons_logit, t_cons_logit) / minibatch_size
+                    r_loss += consistency_loss
+                    meters.update('cons_loss', consistency_loss.data[0])
 
-        assert not (np.isnan(l_loss.data[0]) or l_loss.data[0] > 1e5), 'L-Loss explosion: {}'.format(l_loss.data[0])
-        assert not (np.isnan(r_loss.data[0]) or r_loss.data[0] > 1e5), 'R-Loss explosion: {}'.format(r_loss.data[0])
-        meters.update('l_loss', l_loss.data[0])
-        meters.update('r_loss', r_loss.data[0])
+                elif last_better_model == 'r':
+                    consistency_loss = consistency_weight * consistency_criterion(l_cons_logit, t_cons_logit) / minibatch_size
+                    l_loss += consistency_loss
+                    meters.update('cons_loss', consistency_loss.data[0])
+                                        
+                else:
+                    consistency_loss = 0
+                    meters.update('cons_loss', 0)
 
-        l_prec1, l_prec5 = accuracy(l_class_logit.data, target_var.data, topk=(1, 5))
-        meters.update('l_top1', l_prec1[0], labeled_minibatch_size)
-        meters.update('l_error1', 100. - l_prec1[0], labeled_minibatch_size)
-        meters.update('l_top5', l_prec5[0], labeled_minibatch_size)
-        meters.update('l_error5', 100. - l_prec5[0], labeled_minibatch_size)
+            else:
+                consistency_loss = 0
+                meters.update('cons_loss', 0)
 
-        r_prec1, r_prec5 = accuracy(r_class_logit.data, target_var.data, topk=(1, 5))
-        meters.update('r_top1', r_prec1[0], labeled_minibatch_size)
-        meters.update('r_error1', 100. - r_prec1[0], labeled_minibatch_size)
-        meters.update('r_top5', r_prec5[0], labeled_minibatch_size)
-        meters.update('r_error5', 100. - r_prec5[0], labeled_minibatch_size)
+            assert not (np.isnan(l_loss.data[0]) or l_loss.data[0] > 1e5), 'L-Loss explosion: {}'.format(l_loss.data[0])
+            assert not (np.isnan(r_loss.data[0]) or r_loss.data[0] > 1e5), 'R-Loss explosion: {}'.format(r_loss.data[0])
+            meters.update('l_loss', l_loss.data[0])
+            meters.update('r_loss', r_loss.data[0])
 
-        l_optimizer.zero_grad()
-        l_loss.backward()
-        l_optimizer.step()
+            l_prec1, l_prec5 = accuracy(l_class_logit.data, target_var.data, topk=(1, 5))
+            meters.update('l_top1', l_prec1[0], labeled_minibatch_size)
+            meters.update('l_error1', 100. - l_prec1[0], labeled_minibatch_size)
+            meters.update('l_top5', l_prec5[0], labeled_minibatch_size)
+            meters.update('l_error5', 100. - l_prec5[0], labeled_minibatch_size)
 
-        r_optimizer.zero_grad()
-        r_loss.backward()
-        r_optimizer.step()
+            r_prec1, r_prec5 = accuracy(r_class_logit.data, target_var.data, topk=(1, 5))
+            meters.update('r_top1', r_prec1[0], labeled_minibatch_size)
+            meters.update('r_error1', 100. - r_prec1[0], labeled_minibatch_size)
+            meters.update('r_top5', r_prec5[0], labeled_minibatch_size)
+            meters.update('r_error5', 100. - r_prec5[0], labeled_minibatch_size)
 
+            t_prec1, t_prec5 = accuracy(t_class_logit.data, target_var.data, topk=(1, 5))
+            meters.update('t_top1', t_prec1[0], labeled_minibatch_size)
+            meters.update('t_error1', 100. - t_prec1[0], labeled_minibatch_size)
+            meters.update('t_top5', t_prec5[0], labeled_minibatch_size)
+            meters.update('t_error5', 100. - t_prec5[0], labeled_minibatch_size)
+
+            l_optimizer.zero_grad()
+            l_loss.backward()
+            l_optimizer.step()
+
+            r_optimizer.zero_grad()
+            r_loss.backward()
+            r_optimizer.step()
+
+            if last_better_model == 'l':
+                update_ema_variables(l_model, t_model, args.ema_decay, global_step)
+            elif last_better_model == 'r':
+                update_ema_variables(r_model, t_model, args.ema_decay, global_step)
+                
         global_step += 1
         meters.update('batch_time', time.time() - end)
         end = time.time()
 
         if i % args.print_freq == 0:
-            LOG.info('Epoch: [{0}][{1}/{2}]\t'
-                     'Batch-T {meters[batch_time]:.3f}\t'
+            if epoch == 0:
+                LOG.info('Epoch: [{0}][{1}/{2}]\t'
+                        'Batch-T {meters[batch_time]:.3f}\t'
+                        #  'Data-T {meters[data_time]:.3f}\t'
+                        #  'L-EMA {meters[l_ema_loss]:.4f}\t'
+                        #  'R-EMA {meters[r_ema_loss]:.4f}\t'
+                        'L-Class {meters[l_class_loss]:.4f}\t'
+                        'R-Class {meters[r_class_loss]:.4f}\t'
+                        'Cons {meters[cons_loss]:.4f}\n'
+                        #  'Better-M {better.sum:.1f}\n'
+                        '\tL-Prec@1 {meters[l_top1]:.3f}\t'
+                        'R-Prec@1 {meters[r_top1]:.3f}\t'
+                        'L-Prec@5 {meters[l_top5]:.3f}\t'
+                        'R-Prec@5 {meters[r_top5]:.3f}'.format(
+                        epoch, i, len(train_loader), meters=meters))
+            else:
+                LOG.info('Epoch: [{0}][{1}/{2}]\t'
+                    'Batch-T {meters[batch_time]:.3f}\t'
                     #  'Data-T {meters[data_time]:.3f}\t'
-                     'L-EMA {meters[l_ema_loss]:.4f}\t'
-                     'R-EMA {meters[r_ema_loss]:.4f}\t'
-                     'L-Class {meters[l_class_loss]:.4f}\t'
-                     'R-Class {meters[r_class_loss]:.4f}\t'
-                     'Cons {meters[cons_loss]:.4f}\t'
-                     'Better-M {better.sum:.1f}\n'
-                     'L-Prec@1 {meters[l_top1]:.3f}\t'
-                     'R-Prec@1 {meters[r_top1]:.3f}\t'
-                     'L-Prec@5 {meters[l_top5]:.3f}\t'
-                     'R-Prec@5 {meters[r_top5]:.3f}'.format(
-                     epoch, i, len(train_loader), meters=meters, better=meters['better_model']))
-
+                    #  'L-EMA {meters[l_ema_loss]:.4f}\t'
+                    #  'R-EMA {meters[r_ema_loss]:.4f}\t'
+                    'L-Class {meters[l_class_loss]:.4f}\t'
+                    'R-Class {meters[r_class_loss]:.4f}\t'
+                    'Cons {meters[cons_loss]:.4f}\n'
+                    #  'Better-M {better.sum:.1f}\n'
+                    '\tL-Prec@1 {meters[l_top1]:.3f}\t'
+                    'R-Prec@1 {meters[r_top1]:.3f}\t'
+                    'T-Prec@1 {meters[t_top1]:.3f}\t'
+                    'L-Prec@5 {meters[l_top5]:.3f}\t'
+                    'R-Prec@5 {meters[r_top5]:.3f}\t'
+                    'T-Prec@5 {meters[t_top5]:.3f}'.format(
+                    epoch, i, len(train_loader), meters=meters))
             log.record(epoch + i / len(train_loader), {
                 'step': global_step,
                 **meters.values(),
@@ -421,15 +546,25 @@ def main(context):
     training_log = context.create_train_log('training')
     l_validation_log = context.create_train_log('l_validation')
     r_validation_log = context.create_train_log('r_validation')
+    t_validation_log = context.create_train_log('t_validation')
 
     dataset_config = datasets.__dict__[args.dataset]()
     num_classes = dataset_config.pop('num_classes')
     train_loader, eval_loader = create_data_loaders(**dataset_config, args=args)
     l_model = create_compite_model(side='l', num_classes=num_classes)
     r_model = create_compite_model(side='r', num_classes=num_classes)
+    t_model = create_compite_model(side='t', num_classes=num_classes)
+
+    if args.same_net_init:
+        LOG.info('same net init.')
+        # for l_param, r_param in zip(l_model.parameters(), r_model.parameters()):
+        #     r_param.data.mul_(0.0).add_(l_param.data)
+        copy_model_variables(l_model, r_model)
+        copy_model_variables(l_model, t_model)
 
     LOG.info(parameters_string(l_model))
     LOG.info(parameters_string(r_model))
+    LOG.info(parameters_string(t_model))
 
     l_optimizer = torch.optim.SGD(params=l_model.parameters(),
                                   lr=args.lr,
@@ -466,12 +601,13 @@ def main(context):
         validate(eval_loader, r_model, r_validation_log, global_step, args.start_epoch)
         return
 
-    l_ema_loss, r_ema_loss = calculate_train_ema_loss(train_loader, l_model, r_model)
+    # l_ema_loss, r_ema_loss = calculate_train_ema_loss(train_loader, l_model, r_model)
 
+    last_better_model = ''
     for epoch in range(args.start_epoch, args.epochs):
         start_time = time.time()
         # train for one epoch
-        train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, epoch, training_log)
+        train_epoch(train_loader, l_model, r_model, t_model, l_optimizer, r_optimizer, epoch, training_log, last_better_model)
         LOG.info('--- training epoch in {} seconds ---'.format(time.time()-start_time))
 
         is_best = False
@@ -482,17 +618,84 @@ def main(context):
             l_prec1 = validate(eval_loader, l_model, l_validation_log, global_step, epoch + 1)
             LOG.info('Evaluating the right model: ')
             r_prec1 = validate(eval_loader, r_model, r_validation_log, global_step, epoch + 1)
+            LOG.info('Evaluating the tmp model: ')
+            t_prec1 = validate(eval_loader, t_model, t_validation_log, global_step, epoch + 1)
             LOG.info('--- validation in {} seconds ---'.format(time.time() - start_time))
+
             better_prec1 = l_prec1 if l_prec1 > r_prec1 else r_prec1
             best_prec1 = max(better_prec1, best_prec1)
             is_best = better_prec1 > best_prec1
 
+            
             if better_prec1 == l_prec1:
                 l_better = True
-                LOG.info('Left model work better.')
+                # LOG.info('Left model work better.')
             else:
-                LOG.info('Right model work better.')
+                l_better = False
+                # LOG.info('Right model work better.')
 
+            LOG.info('Prec1-L: {0:.3f}\t Prec1-R: {1:.3f}\t Prec1-T: {2:.3f}'.format(l_prec1, r_prec1, t_prec1))
+            
+            m_best = ''
+            if epoch == 0:
+                if l_better:
+                    copy_model_variables(l_model, t_model)
+                    last_better_model = 'l'
+                    m_best = 'l'
+                    LOG.info('0: l->t')
+                else:
+                    copy_model_variables(r_model, t_model)
+                    last_better_model = 'r'
+                    m_best = 'r'
+                    LOG.info('0: r->t')
+            else:
+                new_t_prec1 = None
+                if last_better_model == 'l':
+                    if l_prec1 > t_prec1:
+                        copy_model_variables(l_model, t_model)
+                        new_t_prec1 = l_prec1
+                        LOG.info('0: l->t')
+                        m_best = 'l'
+                        
+                    else:
+                        copy_model_variables(t_model, l_model)
+                        new_t_prec1 = t_prec1
+                        LOG.info('0: t->l')
+                        m_best = 't'
+                        
+                    if r_prec1 > new_t_prec1:
+                        copy_model_variables(r_model, t_model)
+                        last_better_model = 'r'
+                        LOG.info('1: r->t')
+                        m_best = 'r'
+
+                    else: # r_prec1 <= new_t_prec1
+                        last_better_model = 'l'
+
+                else:
+                    if r_prec1 > t_prec1:
+                        copy_model_variables(r_model, t_model)
+                        new_t_prec1 = r_prec1
+                        LOG.info('0: r->t')
+                        m_best = 'r'
+                        
+                    else:
+                        copy_model_variables(t_model, r_model)
+                        new_t_prec1 = t_prec1
+                        LOG.info('0: t->r')
+                        m_best = 't'
+                                            
+                    if l_prec1 > new_t_prec1:
+                        copy_model_variables(l_model, t_model)
+                        last_better_model = 'l'
+                        LOG.info('1: l->t')
+                        m_best = 'l'
+                        
+                    else:
+                        last_better_model = 'r'
+
+            LOG.info('best model: {0}\t better model: {1}'.format(m_best, last_better_model))
+                
         if args.checkpoint_epochs and (epoch + 1) % args.checkpoint_epochs == 0:
             save_checkpoint({
                 'epoch': epoch + 1,
