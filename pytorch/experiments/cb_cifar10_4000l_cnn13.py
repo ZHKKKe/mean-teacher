@@ -7,7 +7,10 @@ import main_compite_buddy
 from mean_teacher.cli import parse_dict_args
 from mean_teacher.run_context import RunContext
 
-LOG = logging.getLogger('runner')
+LOG = logging.getLogger('main')
+fh = logging.FileHandler('log.log')
+fh.setLevel(logging.INFO)
+LOG.addHandler(fh)
 
 def parameters():
     defaults = {
@@ -41,7 +44,12 @@ def parameters():
 
         # EMA loss competition
         'ema_loss': 0.5,
-        'epoch_init_ema_loss': False, 
+        'epoch_init_ema_loss': False,
+
+        'same_net_init': True, 
+
+        'js_scale': 10,
+        'js_rampup': 5,
     }
 
     # 4000 labels:

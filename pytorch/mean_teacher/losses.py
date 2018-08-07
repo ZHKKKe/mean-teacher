@@ -52,3 +52,18 @@ def symmetric_mse_loss(input1, input2):
     assert input1.size() == input2.size()
     num_classes = input1.size()[1]
     return torch.sum((input1 - input2)**2) / num_classes
+
+def js_loss(input_logits, target_logits):
+    assert input_logits.size() == target_logits.size()
+    input_logits_detach = Variable(input_logits.detach().data, requires_grad=False)
+    target_logits_detach = Variable(target_logits.detach().data, requires_grad=False)
+
+    # input_logits_detach = F.sigmoid(input_logits_detach)
+    # target_logits_detach = F.sigmoid(target_logits_detach)
+
+    input_logits = F.log_softmax(input_logits, dim=1)
+    target_logits = F.log_softmax(target_logits, dim=1)
+
+    m = 0.5 * (input_logits_detach + target_logits_detach)
+    m = F.softmax(m, dim=1)
+    return 0.5 * F.kl_div(input_logits, m, size_average=False) + 0.5 * F.kl_div(target_logits, m, size_average=False)

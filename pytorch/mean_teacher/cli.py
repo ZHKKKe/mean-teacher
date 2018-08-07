@@ -90,6 +90,12 @@ def create_parser():
     parser.add_argument('--epoch-init-ema-loss', default=True, type=str2bool, metavar='BOOL',
                         help='')
     
+    parser.add_argument('--js-scale', default=None, type=float, metavar='WEIGHT',
+                        help='use consistency loss with given weight (default: None)')
+    parser.add_argument('--js-rampup', default=30, type=int, metavar='EPOCHS',
+                        help='')
+    parser.add_argument('--same-net-init', default=False, type=str2bool, metavar='BOOL',
+                        help='')
     return parser
 
 
