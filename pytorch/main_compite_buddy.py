@@ -419,7 +419,7 @@ def train_epoch(train_loader, l_model, r_model, c_model, l_optimizer, r_optimize
         co_js_loss = 0
         if args.js_scale:
             js_weight = calculate_js_scale(epoch)
-            co_js_loss = js_weight * losses.js_loss(alpha_cons_logit, beta_cons_logit)
+            co_js_loss = js_weight * losses.js_loss(alpha_cons_logit, beta_cons_logit) / minibatch_size
             meters.update('js_loss', co_js_loss.data[0])
         else:
             meters.update('js_loss', 0)
