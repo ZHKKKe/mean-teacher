@@ -193,10 +193,10 @@ def calculate_train_ema_loss(train_loader, l_model, r_model):
     LOG.info('Calculate train ema loss initial value.')
     class_criterion = nn.CrossEntropyLoss(size_average=False, ignore_index=NO_LABEL).cuda()
     meters = AverageMeterSet()
-    
+
     l_model.eval()
     r_model.eval()
-    
+
     end = time.time()
     for i, ((l_input, r_input), target) in enumerate(train_loader):
         l_input_var = torch.autograd.Variable(l_input, volatile=True)
@@ -256,6 +256,9 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, epoch,
 
     def calculate_consistency_scale(epoch):
         return args.consistency * sigmoid_rampup_ke(epoch, args.consistency_rampup, args.consistency_rampup_exp)
+
+    def calculate_js_scale(epoch):
+        return args.js_scale * sigmoid_rampup_ke(epoch, args.js_rampup, args.consistency_rampup_exp)
 
     class_criterion = nn.CrossEntropyLoss(size_average=False, ignore_index=NO_LABEL).cuda()
     if args.consistency_type == 'mse':
@@ -323,7 +326,7 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, epoch,
         l_loss, r_loss = l_class_loss, r_class_loss
 
         # update ema loss values
-        l_ema_loss = (1 - args.ema_loss) * l_class_loss.data[0] + args.ema_loss * l_ema_loss 
+        l_ema_loss = (1 - args.ema_loss) * l_class_loss.data[0] + args.ema_loss * l_ema_loss
         r_ema_loss = (1 - args.ema_loss) * r_class_loss.data[0] + args.ema_loss * r_ema_loss
         meters.update('l_ema_loss', l_ema_loss)
         meters.update('r_ema_loss', r_ema_loss)
@@ -335,7 +338,7 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, epoch,
 
             # left model is better
             if l_ema_loss < r_ema_loss:
-            # if l_class_loss.data[0] < r_class_loss.data[0]:
+                # if l_class_loss.data[0] < r_class_loss.data[0]:
                 l_cons_logit = Variable(l_cons_logit.detach().data, requires_grad=False)
                 consistency_loss = consistency_weight * consistency_criterion(r_cons_logit, l_cons_logit) / minibatch_size
                 r_loss += consistency_loss
@@ -344,7 +347,7 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, epoch,
 
             # right model is better
             elif l_ema_loss > r_ema_loss:
-            # elif l_class_loss.data[0] > r_class_loss.data[0]:
+                # elif l_class_loss.data[0] > r_class_loss.data[0]:
                 r_cons_logit = Variable(r_cons_logit.detach().data, requires_grad=False)
                 consistency_loss = consistency_weight * consistency_criterion(l_cons_logit, r_cons_logit) / minibatch_size
                 l_loss += consistency_loss
@@ -377,12 +380,25 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, epoch,
         meters.update('r_top5', r_prec5[0], labeled_minibatch_size)
         meters.update('r_error5', 100. - r_prec5[0], labeled_minibatch_size)
 
+        if args.js_scale:
+            js_weight = calculate_js_scale(epoch)
+            js_loss = js_weight * losses.js_loss(l_class_logit, r_class_logit)
+            meters.update('js_loss', js_loss.data[0])
+            # l_loss += js_loss
+            # r_loss += js_loss
+        else:
+            js_loss = 0
+            meters.update('js_loss', 0)
+        
         l_optimizer.zero_grad()
-        l_loss.backward()
-        l_optimizer.step()
-
         r_optimizer.zero_grad()
+
+        if args.js_scale:
+            js_loss.backward(retain_graph=True)
+        l_loss.backward()
         r_loss.backward()
+
+        l_optimizer.step()
         r_optimizer.step()
 
         global_step += 1
@@ -398,6 +414,7 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, epoch,
                      'L-Class {meters[l_class_loss]:.4f}\t'
                      'R-Class {meters[r_class_loss]:.4f}\t'
                      'Cons {meters[cons_loss]:.4f}\t'
+                     'JS {meters[js_loss]:.4f}\t'
                      'Better-M {better.sum:.1f}\n'
                      'L-Prec@1 {meters[l_top1]:.3f}\t'
                      'R-Prec@1 {meters[r_top1]:.3f}\t'
@@ -466,7 +483,7 @@ def main(context):
         validate(eval_loader, r_model, r_validation_log, global_step, args.start_epoch)
         return
 
-    l_ema_loss, r_ema_loss = calculate_train_ema_loss(train_loader, l_model, r_model)
+    # l_ema_loss, r_ema_loss = calculate_train_ema_loss(train_loader, l_model, r_model)
 
     for epoch in range(args.start_epoch, args.epochs):
         start_time = time.time()

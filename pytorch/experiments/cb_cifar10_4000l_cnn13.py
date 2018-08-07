@@ -42,6 +42,9 @@ def parameters():
         # EMA loss competition
         'ema_loss': 0.5,
         'epoch_init_ema_loss': False, 
+
+        'js_scale': 10,
+        'js_rampup': 80,
     }
 
     # 4000 labels:
