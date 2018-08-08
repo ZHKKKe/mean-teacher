@@ -90,7 +90,7 @@ def adjust_learning_rate(optimizer, epoch, step_in_epoch,
     epoch = epoch + step_in_epoch / total_steps_in_epoch
 
     if args.as_co_train_lr:
-        lr *= ramps.ct_lr_rampdown(epoch)
+        lr *= ramps.ct_lr_rampdown(epoch, args.epochs)
     else:
         # LR warm-up to handle large minibatch sizes from https://arxiv.org/abs/1706.02677
         lr = ramps.linear_rampup(
