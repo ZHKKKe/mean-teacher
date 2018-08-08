@@ -58,6 +58,12 @@ def cifar_cnn13_fc(pretrained=False, **kwargs):
     model = CNN13_FC(**kwargs)
     return model
 
+@export
+def cifar_cnn13_multi_fc(pretrained=False, **kwargs):
+    assert not pretrained
+    model = CNN13_M_FC(**kwargs)
+    return model
+
 
 class ResNet224x224(nn.Module):
     def __init__(self, block, layers, channels, groups=1, num_classes=1000, downsample='basic'):
@@ -423,3 +429,16 @@ class CNN13_FC(nn.Module):
 
     def forward(self, x):
         return self.fc1(x), self.fc2(x)
+
+
+class CNN13_M_FC(nn.Module):
+    def __init__(self, num_classes=10):
+        super(CNN13_M_FC, self).__init__()
+        self.fc1 = weight_norm(nn.Linear(128, num_classes))
+        self.fc2 = weight_norm(nn.Linear(128, num_classes))
+        self.fcs = [self.fc1, self.fc2]
+        # for _ in range(0, 2):
+            # self.fcs.append(weight_norm(nn.Linear(128, num_classes)))
+
+    def forward(self, x, idx):
+        return self.fcs[idx](x)
