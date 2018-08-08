@@ -90,6 +90,17 @@ def create_parser():
     parser.add_argument('--epoch-init-ema-loss', default=True, type=str2bool, metavar='BOOL',
                         help='')
     
+    # for cot js loss
+    parser.add_argument('--cot-js-scale', default=None, type=float, metavar='WEIGHT',
+                        help='')
+    parser.add_argument('--cot-js-rampup', default=30, type=int, metavar='EPOCHS',
+                        help='length of the cot js loss ramp-up')
+    parser.add_argument('--cot-js-rampup-exp', default=-5.0, type=float, metavar='EXP',
+                        help='exp scale for cot-js sigmoid rampup')
+    
+    parser.add_argument('--as-co-train-lr', default=False, type=str2bool, metavar='BOOL',
+                        help='')
+
     return parser
 
 

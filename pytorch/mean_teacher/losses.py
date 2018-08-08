@@ -8,6 +8,7 @@
 """Custom loss functions"""
 
 import torch
+import torch.nn as nn
 from torch.nn import functional as F
 from torch.autograd import Variable
 
@@ -52,3 +53,22 @@ def symmetric_mse_loss(input1, input2):
     assert input1.size() == input2.size()
     num_classes = input1.size()[1]
     return torch.sum((input1 - input2)**2) / num_classes
+
+
+class Entropy(nn.Module):
+    def __init__(self):
+        super(Entropy, self).__init__()
+
+    def forward(self, x):
+        b = F.softmax(x, dim=1) * F.log_softmax(x, dim=1)
+        b = -1.0 * b.sum()
+        return b
+
+
+def js_loss(input_logits, target_logits):
+    assert input_logits.size() == target_logits.size()
+    
+    entropy = Entropy()
+
+    loss = entropy(0.5 * (input_logits + target_logits)) - 0.5 * (entropy(input_logits) + entropy(target_logits))
+    return loss

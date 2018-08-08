@@ -27,10 +27,6 @@ args = None
 best_prec1 = 0
 global_step = 0
 
-l_ema_loss = 0
-r_ema_loss = 0
-
-
 def create_compite_model(side, num_classes):
     LOG.info('=> creating {pretrained} {side} model: {arch}'.format(
         pretrained='pre-trained' if args.pretrained else 'non-pre-trained',
@@ -84,22 +80,11 @@ def create_data_loaders(train_transformation, eval_transformation, datadir, args
     return train_loader, eval_loader
 
 
-def adjust_learning_rate(optimizer, epoch, step_in_epoch,
+def adjust_ct_learning_rate(optimizer, epoch, step_in_epoch,
                          total_steps_in_epoch):
     lr = args.lr
     epoch = epoch + step_in_epoch / total_steps_in_epoch
-
-    if args.as_co_train_lr:
-        lr *= ramps.ct_lr_rampdown(epoch)
-    else:
-        # LR warm-up to handle large minibatch sizes from https://arxiv.org/abs/1706.02677
-        lr = ramps.linear_rampup(
-            epoch, args.lr_rampup) * (args.lr - args.initial_lr) + args.initial_lr
-
-        # Cosine LR rampdown from https://arxiv.org/abs/1608.03983 (but one cycle only)
-        if args.lr_rampdown_epochs:
-            assert args.lr_rampdown_epochs >= args.epochs
-            lr *= ramps.cosine_rampdown(epoch, args.lr_rampdown_epochs)
+    lr *= ramps.ct_lr_rampdown(epoch)
 
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
@@ -190,63 +175,8 @@ def validate(eval_loader, model, log, global_step, epoch):
 
     return meters['top1'].avg
 
-def calculate_train_ema_loss(train_loader, l_model, r_model):
-    # loss calculate scale same as train
-    # Note: loss calculate scale not same as validate?
-    LOG.info('Calculate train ema loss initial value.')
-    class_criterion = nn.CrossEntropyLoss(size_average=False, ignore_index=NO_LABEL).cuda()
-    meters = AverageMeterSet()
-    
-    l_model.eval()
-    r_model.eval()
-    
-    end = time.time()
-    for i, ((l_input, r_input), target) in enumerate(train_loader):
-        l_input_var = torch.autograd.Variable(l_input, volatile=True)
-        r_input_var = torch.autograd.Variable(r_input, volatile=True)
-        target_var = torch.autograd.Variable(target.cuda(async=True), volatile=True)
-
-        minibatch_size = len(target_var)
-        labeled_minibatch_size = target_var.data.ne(NO_LABEL).sum()
-        assert labeled_minibatch_size > 0
-
-        l_model_out = l_model(l_input_var)
-        r_model_out = r_model(r_input_var)
-
-        if isinstance(l_model_out, Variable):
-            assert args.logit_distance_cost < 0
-            l_output1 = l_model_out
-            r_output1 = r_model_out
-        else:
-            assert len(l_model_out) == 2
-            assert len(r_model_out) == 2
-            l_output1, _ = l_model_out
-            r_output1, _ = r_model_out
-
-        l_class_loss = class_criterion(l_output1, target_var) / minibatch_size
-        r_class_loss = class_criterion(r_output1, target_var) / minibatch_size
-        meters.update('l_class_loss', l_class_loss.data[0])
-        meters.update('r_class_loss', r_class_loss.data[0])
-
-        # measure elapsed time
-        meters.update('batch_time', time.time() - end)
-        end = time.time()
-
-        if i % args.print_freq == 0:
-            LOG.info('Iter [{0}]\t'
-                     'Time {meters[batch_time]:.3f}\t'
-                     'L_EMA_Loss: {meters[l_class_loss]:.4f}\t'
-                     'R_EMA_Loss: {meters[r_class_loss]:.4f}'.format(i, meters=meters))
-
-    LOG.info(' * L_EMA_LOSS {l.avg:.4f}\tR_EMA_LOSS {r.avg:.4f}'.format(
-        l=meters['l_class_loss'], r=meters['r_class_loss']))
-
-    return meters['l_class_loss'].avg, meters['r_class_loss'].avg
-
 def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, epoch, log):
     global global_step
-    global l_ema_loss
-    global r_ema_loss
 
     def sigmoid_rampup_ke(current, rampup_length, exp_scale):
         """Exponential rampup from https://arxiv.org/abs/1610.02242"""
@@ -257,24 +187,13 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, epoch,
             phase = 1.0 - current / rampup_length
             return float(np.exp(exp_scale * phase * phase))
 
-    def calculate_consistency_scale(epoch):
-        return args.consistency * sigmoid_rampup_ke(epoch, args.consistency_rampup, args.consistency_rampup_exp)
-
-    class_criterion = nn.CrossEntropyLoss(size_average=False, ignore_index=NO_LABEL).cuda()
-    if args.consistency_type == 'mse':
-        consistency_criterion = losses.softmax_mse_loss
-    elif args.consistency_type == 'kl':
-        consistency_criterion = losses.softmax_kl_loss
-    else:
-        assert False, args.consistency_type
-
-    # residual_logit_criterion = losses.symmetric_mse_loss
+    def calculate_cot_js_scale(epoch):
+        return args.cot_js_scale * sigmoid_rampup_ke(epoch, args.cot_js_rampup, args.cot_js_rampup_exp)
 
     meters = AverageMeterSet()
 
-    # calculate epoch initial ema loss values
-    if epoch != 0 and args.epoch_init_ema_loss:
-        l_ema_loss, r_ema_loss = calculate_train_ema_loss(train_loader, l_model, r_model)
+    class_criterion = nn.CrossEntropyLoss(size_average=False, ignore_index=NO_LABEL).cuda()
+    cot_criterion = losses.js_loss
 
     l_model.train()
     r_model.train()
@@ -284,8 +203,8 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, epoch,
         meters.update('data_time', time.time() - end)
 
         # adjust learning rate, just for ramp-down now
-        adjust_learning_rate(l_optimizer, epoch, i, len(train_loader))
-        adjust_learning_rate(r_optimizer, epoch, i, len(train_loader))
+        adjust_ct_learning_rate(l_optimizer, epoch, i, len(train_loader))
+        adjust_ct_learning_rate(r_optimizer, epoch, i, len(train_loader))
         meters.update('l_lr', l_optimizer.param_groups[0]['lr'])
         meters.update('r_lr', r_optimizer.param_groups[0]['lr'])
 
@@ -295,7 +214,8 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, epoch,
 
         minibatch_size = len(target_var)
         labeled_minibatch_size = target_var.data.ne(NO_LABEL).sum()
-        assert labeled_minibatch_size > 0
+        unlabeled_minibatch_size = minibatch_size - labeled_minibatch_size
+        assert labeled_minibatch_size > 0 and labeled_minibatch_size <= minibatch_size
         meters.update('labeled_minibatch_size', labeled_minibatch_size)
 
         l_model_out = l_model(l_input_var)
@@ -325,48 +245,16 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, epoch,
 
         l_loss, r_loss = l_class_loss, r_class_loss
 
-        # update ema loss values
-        l_ema_loss = (1 - args.ema_loss) * l_class_loss.data[0] + args.ema_loss * l_ema_loss 
-        r_ema_loss = (1 - args.ema_loss) * r_class_loss.data[0] + args.ema_loss * r_ema_loss
-        meters.update('l_ema_loss', l_ema_loss)
-        meters.update('r_ema_loss', r_ema_loss)
-
-        consistency_loss = 0
-        if args.consistency:
-            consistency_weight = calculate_consistency_scale(epoch)
-            meters.update('cons_weight', consistency_weight)
-
-            # left model is better
-            if l_ema_loss < r_ema_loss:
-            # if l_class_loss.data[0] < r_class_loss.data[0]:
-                l_cons_logit = Variable(l_cons_logit.detach().data, requires_grad=False)
-                consistency_loss = consistency_weight * consistency_criterion(r_cons_logit, l_cons_logit) / minibatch_size
-                r_loss += consistency_loss
-                meters.update('better_model', -1.)  # -1 == left model
-                meters.update('cons_loss', consistency_loss.data[0])
-
-            # right model is better
-            elif l_ema_loss > r_ema_loss:
-            # elif l_class_loss.data[0] > r_class_loss.data[0]:
-                r_cons_logit = Variable(r_cons_logit.detach().data, requires_grad=False)
-                consistency_loss = consistency_weight * consistency_criterion(l_cons_logit, r_cons_logit) / minibatch_size
-                l_loss += consistency_loss
-                meters.update('better_model', 1.)    # 1 == right model
-                meters.update('cons_loss', consistency_loss.data[0])
-
-            else:
-                consistency_loss = 0
-                meters.update('cons_loss', 0)
-
-        else:
-            consistency_loss = 0
-            meters.update('cons_loss', 0)
-
-
         assert not (np.isnan(l_loss.data[0]) or l_loss.data[0] > 1e5), 'L-Loss explosion: {}'.format(l_loss.data[0])
         assert not (np.isnan(r_loss.data[0]) or r_loss.data[0] > 1e5), 'R-Loss explosion: {}'.format(r_loss.data[0])
         meters.update('l_loss', l_loss.data[0])
         meters.update('r_loss', r_loss.data[0])
+
+        # cot js loss
+        cot_js_weight = calculate_cot_js_scale(epoch)
+        cot_js_loss = cot_js_weight * cot_criterion(l_class_logit[:unlabeled_minibatch_size], r_class_logit[:unlabeled_minibatch_size])
+        cot_js_loss /= unlabeled_minibatch_size
+        meters.update('cot_loss', cot_js_loss.data[0])
 
         l_prec1, l_prec5 = accuracy(l_class_logit.data, target_var.data, topk=(1, 5))
         meters.update('l_top1', l_prec1[0], labeled_minibatch_size)
@@ -380,12 +268,14 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, epoch,
         meters.update('r_top5', r_prec5[0], labeled_minibatch_size)
         meters.update('r_error5', 100. - r_prec5[0], labeled_minibatch_size)
 
-        l_optimizer.zero_grad()
-        l_loss.backward()
-        l_optimizer.step()
+        loss = l_loss + r_loss + cot_js_loss
 
+        l_optimizer.zero_grad()
         r_optimizer.zero_grad()
-        r_loss.backward()
+
+        loss.backward()
+
+        l_optimizer.step()
         r_optimizer.step()
 
         global_step += 1
@@ -395,18 +285,14 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, epoch,
         if i % args.print_freq == 0:
             LOG.info('Epoch: [{0}][{1}/{2}]\t'
                      'Batch-T {meters[batch_time]:.3f}\t'
-                    #  'Data-T {meters[data_time]:.3f}\t'
-                     'L-EMA {meters[l_ema_loss]:.4f}\t'
-                     'R-EMA {meters[r_ema_loss]:.4f}\t'
                      'L-Class {meters[l_class_loss]:.4f}\t'
                      'R-Class {meters[r_class_loss]:.4f}\t'
-                     'Cons {meters[cons_loss]:.4f}\t'
-                     'Better-M {better.sum:.1f}\n'
+                     'Cot {meters[cot_loss]:.4f}\t'
                      'L-Prec@1 {meters[l_top1]:.3f}\t'
                      'R-Prec@1 {meters[r_top1]:.3f}\t'
                      'L-Prec@5 {meters[l_top5]:.3f}\t'
                      'R-Prec@5 {meters[r_top5]:.3f}'.format(
-                     epoch, i, len(train_loader), meters=meters, better=meters['better_model']))
+                     epoch, i, len(train_loader), meters=meters))
 
             log.record(epoch + i / len(train_loader), {
                 'step': global_step,
@@ -417,8 +303,6 @@ def train_epoch(train_loader, l_model, r_model, l_optimizer, r_optimizer, epoch,
 def main(context):
     global best_prec1
     global global_step
-    global l_ema_loss
-    global r_ema_loss
 
     checkpoint_path = context.transient_dir
     training_log = context.create_train_log('training')
@@ -430,7 +314,6 @@ def main(context):
     train_loader, eval_loader = create_data_loaders(**dataset_config, args=args)
     l_model = create_compite_model(side='l', num_classes=num_classes)
     r_model = create_compite_model(side='r', num_classes=num_classes)
-
     LOG.info(parameters_string(l_model))
     LOG.info(parameters_string(r_model))
 
@@ -469,8 +352,6 @@ def main(context):
         validate(eval_loader, r_model, r_validation_log, global_step, args.start_epoch)
         return
 
-    l_ema_loss, r_ema_loss = calculate_train_ema_loss(train_loader, l_model, r_model)
-
     for epoch in range(args.start_epoch, args.epochs):
         start_time = time.time()
         # train for one epoch
@@ -500,15 +381,12 @@ def main(context):
             save_checkpoint({
                 'epoch': epoch + 1,
                 'global_step': global_step,
-                'better_model': -1 if l_better else 1,
                 'arch': args.arch,
                 'l_model': l_model.state_dict(),
                 'r_model': r_model.state_dict(),
                 'l_optimizer':l_optimizer.state_dict(),
                 'r_optimizer':r_optimizer.state_dict(),
             }, is_best, checkpoint_path, epoch + 1)
-
-
 
 
 if __name__ == '__main__':

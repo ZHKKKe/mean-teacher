@@ -45,6 +45,20 @@ def cifar_cnn13(pretrained=False, **kwargs):
     return model
 
 
+@export
+def cifar_cnn13_conv(pretrained=False, **kwargs):
+    assert not pretrained
+    model = CNN13_CONV(**kwargs)
+    return model
+
+
+@export
+def cifar_cnn13_fc(pretrained=False, **kwargs):
+    assert not pretrained
+    model = CNN13_FC(**kwargs)
+    return model
+
+
 class ResNet224x224(nn.Module):
     def __init__(self, block, layers, channels, groups=1, num_classes=1000, downsample='basic'):
         super().__init__()
@@ -333,12 +347,22 @@ class GaussianNoise(nn.Module):
 from torch.nn.utils import weight_norm
 # For cifar_cnn
 class CNN13(nn.Module):
+    def __init__(self, num_classes=10):
+        super(CNN13, self).__init__()
+        self.conv = CNN13_CONV(num_classes)
+        self.fc = CNN13_FC(num_classes)
+
+    def forward(self, x):
+        x = self.conv.forward(x)
+        return self.fc.forward(x)
+
+class CNN13_CONV(nn.Module):
     """
     CNN from Mean Teacher paper
     """
-    
+
     def __init__(self, num_classes=10):
-        super(CNN13, self).__init__()
+        super(CNN13_CONV, self).__init__()
 
         self.gn = GaussianNoise(0.15)
         self.activation = nn.LeakyReLU(0.1)
@@ -349,8 +373,8 @@ class CNN13(nn.Module):
         self.conv1c = weight_norm(nn.Conv2d(128, 128, 3, padding=1))
         self.bn1c = nn.BatchNorm2d(128)
         self.mp1 = nn.MaxPool2d(2, stride=2, padding=0)
-        self.drop1  = nn.Dropout(0.5)
-        
+        self.drop1 = nn.Dropout(0.5)
+
         self.conv2a = weight_norm(nn.Conv2d(128, 256, 3, padding=1))
         self.bn2a = nn.BatchNorm2d(256)
         self.conv2b = weight_norm(nn.Conv2d(256, 256, 3, padding=1))
@@ -358,8 +382,8 @@ class CNN13(nn.Module):
         self.conv2c = weight_norm(nn.Conv2d(256, 256, 3, padding=1))
         self.bn2c = nn.BatchNorm2d(256)
         self.mp2 = nn.MaxPool2d(2, stride=2, padding=0)
-        self.drop2  = nn.Dropout(0.5)
-        
+        self.drop2 = nn.Dropout(0.5)
+
         self.conv3a = weight_norm(nn.Conv2d(256, 512, 3, padding=0))
         self.bn3a = nn.BatchNorm2d(512)
         self.conv3b = weight_norm(nn.Conv2d(512, 256, 1, padding=0))
@@ -367,27 +391,35 @@ class CNN13(nn.Module):
         self.conv3c = weight_norm(nn.Conv2d(256, 128, 1, padding=0))
         self.bn3c = nn.BatchNorm2d(128)
         self.ap3 = nn.AvgPool2d(6, stride=2, padding=0)
-        
-        self.fc1 =  weight_norm(nn.Linear(128, num_classes))
-        self.fc2 =  weight_norm(nn.Linear(128, num_classes))
-    
-    def forward(self, x, debug=False):
+
+    def forward(self, x):
         x = self.activation(self.bn1a(self.conv1a(x)))
         x = self.activation(self.bn1b(self.conv1b(x)))
         x = self.activation(self.bn1c(self.conv1c(x)))
         x = self.mp1(x)
         x = self.drop1(x)
-        
+
         x = self.activation(self.bn2a(self.conv2a(x)))
         x = self.activation(self.bn2b(self.conv2b(x)))
         x = self.activation(self.bn2c(self.conv2c(x)))
         x = self.mp2(x)
         x = self.drop2(x)
-        
+
         x = self.activation(self.bn3a(self.conv3a(x)))
         x = self.activation(self.bn3b(self.conv3b(x)))
         x = self.activation(self.bn3c(self.conv3c(x)))
         x = self.ap3(x)
- 
+
         x = x.view(-1, 128)
+        return x
+
+
+class CNN13_FC(nn.Module):
+    def __init__(self, num_classes=10):
+        super(CNN13_FC, self).__init__()
+        
+        self.fc1 = weight_norm(nn.Linear(128, num_classes))
+        self.fc2 = weight_norm(nn.Linear(128, num_classes))
+
+    def forward(self, x):
         return self.fc1(x), self.fc2(x)

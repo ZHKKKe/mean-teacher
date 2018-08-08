@@ -39,3 +39,6 @@ def cosine_rampdown(current, rampdown_length):
     """Cosine rampdown from https://arxiv.org/abs/1608.03983"""
     assert 0 <= current <= rampdown_length
     return float(.5 * (np.cos(np.pi * current / rampdown_length) + 1))
+
+def ct_lr_rampdown(cur_epoch):
+    return float(1.0 + np.cos((cur_epoch - 1) * np.pi / 600))
