@@ -27,6 +27,8 @@ args = None
 best_prec1 = 0
 global_step = 0
 
+t_from = 'l'
+
 l_ema_loss = 0
 r_ema_loss = 0
 
@@ -256,6 +258,7 @@ def train_epoch(train_loader, l_model, r_model, t_model, l_optimizer, r_optimize
     global global_step
     global l_ema_loss
     global r_ema_loss
+    global t_from
 
     def sigmoid_rampup_ke(current, rampup_length, exp_scale):
         """Exponential rampup from https://arxiv.org/abs/1610.02242"""
@@ -282,8 +285,8 @@ def train_epoch(train_loader, l_model, r_model, t_model, l_optimizer, r_optimize
     meters = AverageMeterSet()
 
     # calculate epoch initial ema loss values
-    if epoch != 0 and args.epoch_init_ema_loss:
-        l_ema_loss, r_ema_loss = calculate_train_ema_loss(train_loader, l_model, r_model)
+    # if epoch != 0 and args.epoch_init_ema_loss:
+    # l_ema_loss, r_ema_loss = calculate_train_ema_loss(train_loader, l_model, r_model)
 
     l_model.train()
     r_model.train()
@@ -336,40 +339,6 @@ def train_epoch(train_loader, l_model, r_model, t_model, l_optimizer, r_optimize
 
         l_loss, r_loss = l_class_loss, r_class_loss
 
-        # update ema loss values
-        # l_ema_loss = (1 - args.ema_loss) * l_class_loss.data[0] + args.ema_loss * l_ema_loss
-        # r_ema_loss = (1 - args.ema_loss) * r_class_loss.data[0] + args.ema_loss * r_ema_loss
-        # meters.update('l_ema_loss', l_ema_loss)
-        # meters.update('r_ema_loss', r_ema_loss)
-
-        # consistency loss
-        # consistency_loss = 0
-        # if args.consistency:
-        #     consistency_weight = calculate_consistency_scale(epoch)
-        #     meters.update('cons_weight', consistency_weight)
-
-        #     t_cons_logit = Variable(t_cons_logit.detach().data, requires_grad=False)
-        #     if l_ema_loss < r_ema_loss:
-        #         consistency_loss = consistency_weight * consistency_criterion(r_cons_logit, t_cons_logit) / minibatch_size
-        #         r_loss += consistency_loss
-        #         meters.update('cons_loss', consistency_loss.data[0])
-        #         meters.update('better_model', -1.)  # -1 == left model
-
-        #     elif l_ema_loss > r_ema_loss:
-        #         consistency_loss = consistency_weight * consistency_criterion(l_cons_logit, t_cons_logit) / minibatch_size
-        #         l_loss += consistency_loss
-        #         meters.update('cons_loss', consistency_loss.data[0])
-        #         meters.update('better_model', 1.)    # 1 == right model
-
-        #     else:
-        #         consistency_loss = 0
-        #         meters.update('cons_loss', 0)
-
-        # else:
-        #     consistency_loss = 0
-        #     meters.update('cons_loss', 0)
-
-
         consistency_weight = calculate_consistency_scale(epoch)
         meters.update('cons_weight', consistency_weight)
 
@@ -378,8 +347,13 @@ def train_epoch(train_loader, l_model, r_model, t_model, l_optimizer, r_optimize
         r_consistency_loss = consistency_weight * consistency_criterion(r_cons_logit, t_cons_logit) / minibatch_size
         meters.update('l_cons_loss', l_consistency_loss.data[0])
         meters.update('r_cons_loss', r_consistency_loss.data[0])
-        r_loss += r_consistency_loss
         l_loss += l_consistency_loss
+        r_loss += r_consistency_loss
+
+        l_ema_loss = (1 - args.ema_loss) * l_consistency_loss.data[0] + args.ema_loss * l_ema_loss
+        r_ema_loss = (1 - args.ema_loss) * r_consistency_loss.data[0] + args.ema_loss * r_ema_loss
+        meters.update('l_ema_loss', l_ema_loss)
+        meters.update('r_ema_loss', r_ema_loss)
 
         assert not (np.isnan(l_loss.data[0]) or l_loss.data[0] > 1e5), 'L-Loss explosion: {}'.format(l_loss.data[0])
         assert not (np.isnan(r_loss.data[0]) or r_loss.data[0] > 1e5), 'R-Loss explosion: {}'.format(r_loss.data[0])
@@ -404,18 +378,6 @@ def train_epoch(train_loader, l_model, r_model, t_model, l_optimizer, r_optimize
         meters.update('t_top5', t_prec5[0], labeled_minibatch_size)
         meters.update('t_error5', 100. - t_prec5[0], labeled_minibatch_size)
 
-        if l_consistency_loss.data[0] < r_consistency_loss.data[0]:
-            l_cons_logit = Variable(l_cons_logit.detach().data, requires_grad=False)
-            l2r_consistency_loss = consistency_weight * consistency_criterion(r_cons_logit, l_cons_logit) / minibatch_size
-            r_loss += l2r_consistency_loss
-            meters.update('b_cons_loss', l2r_consistency_loss.data[0])
-
-        elif l_consistency_loss.data[0] > r_consistency_loss.data[0]:
-            r_cons_logit = Variable(r_cons_logit.detach().data, requires_grad=False)
-            r2l_consistency_loss = consistency_weight * consistency_criterion(l_cons_logit, r_cons_logit) / minibatch_size
-            l_loss += r2l_consistency_loss
-            meters.update('b_cons_loss', r2l_consistency_loss.data[0])
-
         l_optimizer.zero_grad()
         l_loss.backward()
         l_optimizer.step()
@@ -424,12 +386,24 @@ def train_epoch(train_loader, l_model, r_model, t_model, l_optimizer, r_optimize
         r_loss.backward()
         r_optimizer.step()
 
-        if l_consistency_loss.data[0] < r_consistency_loss.data[0]:
+        # -- moving average
+        if l_ema_loss < r_ema_loss:
             meters.update('better_model', -1.)  # -1 == left model
-            update_ema_variables(l_model, t_model, args.ema_decay, global_step)
-        elif l_consistency_loss.data[0] > r_consistency_loss.data[0]:
-            meters.update('better_model', 1.)  # -1 == right model
-            update_ema_variables(r_model, t_model, args.ema_decay, global_step)
+            if t_from == 'l':
+                update_ema_variables(l_model, t_model, args.ema_decay, global_step)
+            elif t_from == 'r':
+                copy_model_variables(t_model, r_model)
+                copy_model_variables(l_model, t_model)
+            t_from = 'l'
+
+        elif l_ema_loss > r_ema_loss:
+            meters.update('better_model', 1.)  # 1 == right model
+            if t_from == 'r':
+                update_ema_variables(r_model, t_model, args.ema_decay, global_step)
+            elif t_from == 'l':
+                copy_model_variables(t_model, l_model)
+                copy_model_variables(r_model, t_model)
+            t_from = 'r'
 
         global_step += 1
         meters.update('batch_time', time.time() - end)
@@ -439,13 +413,12 @@ def train_epoch(train_loader, l_model, r_model, t_model, l_optimizer, r_optimize
             LOG.info('Epoch: [{0}][{1}/{2}]\t'
                 'Batch-T {meters[batch_time]:.3f}\t'
                 #  'Data-T {meters[data_time]:.3f}\t'
-                #  'L-EMA {meters[l_ema_loss]:.4f}\t'
-                #  'R-EMA {meters[r_ema_loss]:.4f}\t'
                 'L-Class {meters[l_class_loss]:.4f}\t'
                 'R-Class {meters[r_class_loss]:.4f}\t'
+                'L-EMA {meters[l_ema_loss]:.4f}\t'
+                'R-EMA {meters[r_ema_loss]:.4f}\t'
                 'L-Cons {meters[l_cons_loss]:.4f}\t'
                 'R-Cons {meters[r_cons_loss]:.4f}\t'
-                'B-Cons {meters[b_cons_loss]:.4f}\t'
                 'Better-M {better.sum:.1f}\n'
                 'L-Prec@1 {meters[l_top1]:.3f}\t'
                 'R-Prec@1 {meters[r_top1]:.3f}\t'
@@ -465,6 +438,7 @@ def main(context):
     global global_step
     global l_ema_loss
     global r_ema_loss
+    global t_from
 
     checkpoint_path = context.transient_dir
     training_log = context.create_train_log('training')
@@ -483,6 +457,11 @@ def main(context):
         LOG.info('same net init.')
         copy_model_variables(l_model, r_model)
         copy_model_variables(l_model, t_model)
+
+    if t_from == 'l':
+        copy_model_variables(l_model, t_model)
+    elif t_from == 'r':
+        copy_model_variables(r_model, t_model)
 
     LOG.info(parameters_string(l_model))
     LOG.info(parameters_string(r_model))
