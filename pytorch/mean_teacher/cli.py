@@ -101,6 +101,9 @@ def create_parser():
     parser.add_argument('--as-co-train-lr', default=False, type=str2bool, metavar='BOOL',
                         help='')
 
+    parser.add_argument('--ema-model-judge', default=False, type=str2bool, metavar='BOOL',
+                        help='')
+
     return parser
 
 
