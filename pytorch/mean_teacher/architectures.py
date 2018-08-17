@@ -46,6 +46,13 @@ def cifar_cnn13(pretrained=False, **kwargs):
 
 
 @export
+def cifar_cnn13_gan(pretrained=False, **kwargs):
+    assert not pretrained
+    model = CNN13_GAN(**kwargs)
+    return model
+
+
+@export
 def cifar_cnn13_conv(pretrained=False, **kwargs):
     assert not pretrained
     model = CNN13_CONV(**kwargs)
@@ -358,9 +365,112 @@ class CNN13(nn.Module):
         self.conv = CNN13_CONV(num_classes)
         self.fc = CNN13_FC(num_classes)
 
-    def forward(self, x):
+    def forward(self, x, feature=False):
         x = self.conv.forward(x)
-        return self.fc.forward(x)
+        if feature:
+            return self.fc.forward(x), x
+        else:
+            return self.fc.forward(x)
+
+
+class CNN13_GAN(nn.Module):
+    def __init__(self, num_classes=10):
+        super(CNN13_GAN, self).__init__()
+        self.conv = CNN13_CONV(num_classes=num_classes)
+        self.fc = CNN13_FC(num_classes=num_classes)
+        self.disc = CNN13_DISC(num_classes=1)
+    
+    def _mode(self, mode):
+        if mode == 'classify':
+            for param in self.conv.parameters():
+                param.requires_grad = True
+            for param in self.fc.parameters():
+                param.requires_grad = True
+            for param in self.disc.parameters():
+                param.requires_grad = False
+            self.conv.train(mode=True)
+            self.fc.train(mode=True)
+            self.disc.train(mode=False)
+        elif mode == 'discriminator':
+            for param in self.conv.parameters():
+                param.requires_grad = False
+            for param in self.fc.parameters():
+                param.requires_grad = False
+            for param in self.disc.parameters():
+                param.requires_grad = True
+            self.conv.train(mode=False)
+            self.fc.train(mode=False)
+            self.disc.train(mode=True)
+        elif mode == 'generator':
+            for param in self.conv.parameters():
+                param.requires_grad = True
+            for param in self.fc.parameters():
+                param.requires_grad = False
+            for param in self.disc.parameters():
+                param.requires_grad = False
+            self.conv.train(mode=True)
+            self.fc.train(mode=False)
+            self.disc.train(mode=False)
+        elif mode == 'validate':
+            for param in self.conv.parameters():
+                param.requires_grad = False
+            for param in self.fc.parameters():
+                param.requires_grad = False
+            for param in self.disc.parameters():
+                param.requires_grad = False
+            self.conv.train(mode=False)
+            self.fc.train(mode=False)
+            self.disc.train(mode=False)
+        else:
+            LOG.info('Unknown CNN13_K mode.')
+            exit(1)
+
+    def forward(self, x, mode, bs=0, lbs=0, feature=False):
+        self._mode(mode)
+
+        if mode == 'classify':
+            x = self.conv.forward(x)
+            return self.fc.forward(x)
+        
+        elif mode == 'discriminator':
+            assert bs == lbs * 2
+            x = x.split(lbs)
+
+            z_unlabeled = self.conv.forward(x[0])
+            z_labeled = self.conv.forward(x[1])
+
+            d_unlabeled = self.disc(z_unlabeled)
+            d_labeled = self.disc(z_labeled)
+
+            if feature:
+                return d_unlabeled, d_labeled, z_unlabeled, z_labeled
+            else:
+                return d_unlabeled, d_labeled
+
+        elif mode == 'generator':
+            assert bs == lbs * 2
+            x = x.split(lbs)
+
+            z_unlabeled = self.conv.forward(x[0])
+            z_labeled = self.conv.forward(x[1])
+
+            d_unlabeled = self.disc(z_unlabeled)
+            d_labeled = self.disc(z_labeled)
+
+            return d_unlabeled, d_labeled
+
+        elif mode == 'validate':
+            z = self.conv.forward(x)
+
+            if feature:
+                return self.fc.forward(z), z
+            else:
+                return self.fc.forward(z)
+
+        else:
+            LOG.info('Unknown CNN13_GAN mode.')
+            exit(1)
+
 
 class CNN13_CONV(nn.Module):
     """
@@ -442,3 +552,20 @@ class CNN13_M_FC(nn.Module):
 
     def forward(self, x, idx):
         return self.fcs[idx](x)
+
+
+class CNN13_DISC(nn.Module):
+    def __init__(self, num_classes=1):
+        super(CNN13_DISC, self).__init__()
+
+        self.disc1 = nn.Linear(128, 1024)
+        self.disc2 = nn.Linear(1024, 1024)
+        self.disc3 = nn.Linear(1024, num_classes)
+    
+    def forward(self, x):
+        x = self.disc1(x)
+        x = F.relu(x)
+        x = self.disc2(x)
+        x = F.relu(x)
+
+        return F.sigmoid(self.disc3(x))

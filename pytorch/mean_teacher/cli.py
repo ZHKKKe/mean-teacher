@@ -104,6 +104,14 @@ def create_parser():
     parser.add_argument('--ema-model-judge', default=False, type=str2bool, metavar='BOOL',
                         help='')
 
+    parser.add_argument('--draw-feature', default=False, type=str2bool, metavar='BOOL', help='')
+
+    parser.add_argument('--disc-lr', default=0.0, type=float, metavar='DISCLR', help='')
+    parser.add_argument('--gen-lr', default=0.0, type=float, metavar='GENLR', help='')
+
+    parser.add_argument('--train-disc', default=False, type=str2bool, metavar='BOOL', help='')
+    parser.add_argument('--train-gen', default=False, type=str2bool, metavar='BOOL', help='')
+
     return parser
 
 
