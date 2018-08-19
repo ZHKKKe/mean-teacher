@@ -62,10 +62,8 @@ class RunContext:
             run_idx=run_idx
         )
         self.transient_dir = self.result_dir + "/transient"
-        self.tmp_dir = self.result_dir + '/tmp'
         os.makedirs(self.result_dir)
         os.makedirs(self.transient_dir)
-        os.makedirs(self.tmp_dir)
 
     def create_train_log(self, name):
         return TrainLog(self.result_dir, name)

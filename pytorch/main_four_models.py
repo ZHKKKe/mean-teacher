@@ -30,58 +30,6 @@ global_step = 0
 l_ema_loss = 0
 r_ema_loss = 0
 
-tmp_path = ''
-
-def pca_drawer(x, y, epoch, name):
-    import matplotlib
-    matplotlib.use('Agg')
-    import matplotlib.pyplot as plt
-    global tmp_path
-
-    color_map = {
-        -1: 'indianred', 0: 'orange', 1: 'khaki', 2: 'lightgreen',
-        3: 'paleturquoise', 4: 'dodgerblue', 5: 'lightsteelblue', 6: 'slategray',
-        7: 'mediumpurple', 8: 'hotpink', 9: 'silver',
-    }
-
-    plt.clf()
-    plt.title(name)
-    plt.grid(True)
-    plt.xlabel('x')
-    plt.ylabel('y')
-    plt.xticks(fontsize=7)
-    plt.yticks(fontsize=7)
-    data_0 = x[..., 0]
-    data_1 = x[..., 1]
-
-    x_side = 0.3 * (np.max(data_0) - np.min(data_0))
-    y_side = 0.3 * (np.max(data_1) - np.min(data_1))
-
-    plt.axis([
-        np.min(data_0) - x_side,
-        np.max(data_0) + x_side,
-        np.min(data_1) - y_side,
-        np.max(data_1) + y_side
-    ])
-
-    # split data
-    data = {}
-    for i in range(-1, 10):
-        data[i] = [[], []]
-
-    for idx, label in enumerate(y):
-        data[label][0].append(x[idx][0])
-        data[label][1].append(x[idx][1])
-
-    for i in range(-1, 10):
-        plt.scatter(data[i][0], data[i][1], label=i, marker='.', s=3, c=color_map[i])
-
-    plt.legend(loc='upper right')
-    filename = name + '_{}.jpg'.format(epoch)
-    file_path = os.path.join(tmp_path, filename)
-    plt.savefig(file_path, dpi=300)
-    plt.close('all')
-
 
 def update_ema_variables(model, ema_model, alpha, global_step):
     # Use the true average until the exponential average is more correct
@@ -102,9 +50,9 @@ def create_compite_model(side, num_classes):
 
     model_factory = architectures.__dict__[args.arch]
     model_params = dict(pretrained=args.pretrained, num_classes=num_classes)
-    model_module = model_factory(**model_params)
-    model = nn.DataParallel(model_module).cuda()
-    return model, model_module
+    model = model_factory(**model_params)
+    model = nn.DataParallel(model).cuda()
+    return model
 
 
 def create_data_loaders(train_transformation, eval_transformation, datadir, args):
@@ -192,16 +140,13 @@ def save_checkpoint(state, is_best, dirpath, epoch):
         shutil.copyfile(checkpoint_path, best_path)
         LOG.info("--- checkpoint copied to %s ---" % best_path)
 
-def validate(eval_loader, model, log, global_step, epoch, name='validate'):
+def validate(eval_loader, model, log, global_step, epoch):
     class_criterion = nn.CrossEntropyLoss(
         size_average=False, ignore_index=NO_LABEL).cuda()
     meters = AverageMeterSet()
 
     # switch to evaluate mode
     model.eval()
-
-    pca_features = []
-    pca_labeles = []
 
     end = time.time()
     for i, (input, target) in enumerate(eval_loader):
@@ -217,20 +162,10 @@ def validate(eval_loader, model, log, global_step, epoch, name='validate'):
         meters.update('labeled_minibatch_size', labeled_minibatch_size)
 
         # compute output
-        feature = None
-        if args.draw_feature:
-            outputs, feature = model(input_var, mode='validate', feature=True)
-            output1, output2 = outputs[0], outputs[1]
-            if feature is not None:
-                f_data = feature.data.cpu().numpy()
-                t_data = target_var.data.cpu().numpy()
-                for idx, f in enumerate(f_data):
-                    pca_features.append(f)
-                    pca_labeles.append(t_data[idx])
-        else:
-            output1, output2 = model(input_var, mode='validate')
-
-        softmax1, softmax2 = F.softmax(output1, dim=1), F.softmax(output2, dim=1)
+        output1, output2 = model(input_var)
+        softmax1, softmax2 = F.softmax(
+            output1, dim=1), F.softmax(
+                output2, dim=1)
         class_loss = class_criterion(output1, target_var) / minibatch_size
 
         # measure accuracy and record loss
@@ -264,16 +199,6 @@ def validate(eval_loader, model, log, global_step, epoch, name='validate'):
             **meters.sums()
         })
 
-    if args.draw_feature:
-        LOG.info('--------------- PCA FEATURE DRAWER ---------------')
-        from sklearn.decomposition import PCA
-        pca_features = np.asarray(pca_features)
-        pca_labeles = np.asarray(pca_labeles)
-        pca = PCA(n_components=2)
-        pca_results = pca.fit_transform(pca_features)
-        pca_drawer(pca_results, pca_labeles, epoch=epoch, name=name)
-        LOG.info('--------------------------------------------------')
-
     return meters['top1'].avg
 
 def calculate_train_ema_loss(train_loader, l_model, r_model):
@@ -296,8 +221,8 @@ def calculate_train_ema_loss(train_loader, l_model, r_model):
         labeled_minibatch_size = target_var.data.ne(NO_LABEL).sum()
         assert labeled_minibatch_size > 0
 
-        l_model_out = l_model(l_input_var, mode='validate')
-        r_model_out = r_model(r_input_var, mode='validate')
+        l_model_out = l_model(l_input_var)
+        r_model_out = r_model(r_input_var)
 
         if isinstance(l_model_out, Variable):
             assert args.logit_distance_cost < 0
@@ -329,8 +254,7 @@ def calculate_train_ema_loss(train_loader, l_model, r_model):
 
     return meters['l_class_loss'].avg, meters['r_class_loss'].avg
 
-def train_epoch(train_loader, l_model, r_model, le_model, re_model, 
-                l_optimizer, r_optimizer, l_disc_optim, r_disc_optim, l_gen_optim, r_gen_optim, epoch, log):
+def train_epoch(train_loader, l_model, r_model, le_model, re_model, l_optimizer, r_optimizer, epoch, log):
     global global_step
     global l_ema_loss
     global r_ema_loss
@@ -387,10 +311,10 @@ def train_epoch(train_loader, l_model, r_model, le_model, re_model,
         assert labeled_minibatch_size > 0
         meters.update('labeled_minibatch_size', labeled_minibatch_size)
 
-        l_model_out = l_model(l_input_var, mode='classify')
-        r_model_out = r_model(r_input_var, mode='classify')
-        le_model_out = le_model(r_input_var, mode='classify')
-        re_model_out = re_model(l_input_var, mode='classify')
+        l_model_out = l_model(l_input_var)
+        r_model_out = r_model(r_input_var)
+        le_model_out = le_model(r_input_var)
+        re_model_out = re_model(l_input_var)
 
         # now just use 2 output for cifar10 dataset
         if isinstance(l_model_out, Variable):
@@ -519,57 +443,10 @@ def train_epoch(train_loader, l_model, r_model, le_model, re_model,
         r_loss.backward()
         r_optimizer.step()
 
-        tiny = 1e-15
-        if args.train_disc:
-            l_unlabeled_out, l_labeled_out = l_model(l_input_var, mode='discriminator', bs=minibatch_size, lbs=labeled_minibatch_size, feature=False)
-            r_unlabeled_out, r_labeled_out = r_model(r_input_var, mode='discriminator', bs=minibatch_size, lbs=labeled_minibatch_size, feature=False)
-
-            l_disc_loss = -torch.mean(torch.log(l_labeled_out + tiny) + torch.log(1 - l_unlabeled_out + tiny))
-            r_disc_loss = -torch.mean(torch.log(r_labeled_out + tiny) + torch.log(1 - r_unlabeled_out + tiny))
-
-            meters.update('l_disc_loss', l_disc_loss.data[0])
-            meters.update('r_disc_loss', r_disc_loss.data[0])
-            if i % args.print_freq == 0:
-                LOG.info('l_unlabeled: {0}'.format(list(l_unlabeled_out.data.cpu().numpy().tolist())[:5]))
-                LOG.info('l_labeled: {0}'.format(list(l_labeled_out.data.cpu().numpy().tolist())[:5]))
-                LOG.info('r_unlabeled: {0}'.format(list(r_unlabeled_out.data.cpu().numpy().tolist())[:5]))
-                LOG.info('r_labeled: {0}'.format(list(r_labeled_out.data.cpu().numpy().tolist())[:5]))
-                LOG.info('l_disc_loss: {meters[l_disc_loss]:.4f}\t'
-                         'r_disc_loss: {meters[r_disc_loss]:.4f}'.format(meters=meters))
-                         
-            l_disc_optim.zero_grad()
-            l_disc_loss.backward()
-            l_disc_optim.step()
-
-            r_disc_optim.zero_grad()
-            r_disc_loss.backward()
-            r_disc_optim.step()
-
-            if args.train_gen:
-                l_unlabeled_out, l_labeled_out = l_model(l_input_var, mode='generator', bs=minibatch_size, lbs=labeled_minibatch_size, feature=False)
-                r_unlabeled_out, r_labeled_out = r_model(r_input_var, mode='generator', bs=minibatch_size, lbs=labeled_minibatch_size, feature=False)
-
-                l_gen_loss = -torch.mean(torch.log(l_unlabeled_out + tiny))
-                r_gen_loss = -torch.mean(torch.log(r_unlabeled_out + tiny))
-                
-                meters.update('l_gen_loss', l_gen_loss.data[0])
-                meters.update('r_gen_loss', r_gen_loss.data[0])
-                if i % args.print_freq == 0:
-                    LOG.info('l_gen_loss: {meters[l_gen_loss]:.4f}\t'
-                            'r_gen_loss: {meters[r_gen_loss]:.4f}'.format(meters=meters))
-
-                l_gen_optim.zero_grad()
-                l_gen_loss.backward()
-                l_gen_optim.step()
-
-                r_gen_optim.zero_grad()
-                r_gen_loss.backward()
-                r_gen_optim.step()
-
-        global_step += 1
         update_ema_variables(l_model, le_model, args.ema_decay, global_step)
         update_ema_variables(r_model, re_model, args.ema_decay, global_step)
 
+        global_step += 1
         meters.update('batch_time', time.time() - end)
         end = time.time()
 
@@ -605,9 +482,6 @@ def main(context):
     global l_ema_loss
     global r_ema_loss
 
-    global tmp_path
-
-    tmp_path = context.tmp_dir
     checkpoint_path = context.transient_dir
     training_log = context.create_train_log('training')
     l_validation_log = context.create_train_log('l_validation')
@@ -616,10 +490,10 @@ def main(context):
     dataset_config = datasets.__dict__[args.dataset]()
     num_classes = dataset_config.pop('num_classes')
     train_loader, eval_loader = create_data_loaders(**dataset_config, args=args)
-    l_model, l_model_module = create_compite_model(side='l', num_classes=num_classes)
-    r_model, r_model_module = create_compite_model(side='r', num_classes=num_classes)
-    le_model, le_model_module = create_compite_model(side='le', num_classes=num_classes)
-    re_model, re_model_module = create_compite_model(side='re', num_classes=num_classes)
+    l_model = create_compite_model(side='l', num_classes=num_classes)
+    r_model = create_compite_model(side='r', num_classes=num_classes)
+    le_model = create_compite_model(side='le', num_classes=num_classes)
+    re_model = create_compite_model(side='re', num_classes=num_classes)
 
     copy_model_variables(l_model, le_model)
     copy_model_variables(r_model, re_model)
@@ -629,25 +503,16 @@ def main(context):
     LOG.info(parameters_string(le_model))
     LOG.info(parameters_string(re_model))
 
-    l_optimizer = torch.optim.SGD([
-        {'params': l_model_module.conv.parameters(), 'lr': args.lr},
-        {'params': l_model_module.fc.parameters(), 'lr': args.lr}],
-        lr=args.lr, momentum=args.momentum,
-        weight_decay=args.weight_decay,
-        nesterov=args.nesterov)
-
-    r_optimizer = torch.optim.SGD([
-        {'params': r_model_module.conv.parameters(), 'lr': args.lr},
-        {'params': r_model_module.fc.parameters(), 'lr': args.lr}],
-        lr=args.lr, momentum=args.momentum,
-        weight_decay=args.weight_decay,
-        nesterov=args.nesterov)
-
-    l_disc_optim = torch.optim.Adam(params=l_model_module.disc.parameters(), lr=args.disc_lr)
-    l_gen_optim = torch.optim.Adam(params=l_model_module.conv.parameters(), lr=args.gen_lr)
-
-    r_disc_optim = torch.optim.Adam(params=r_model_module.disc.parameters(), lr=args.disc_lr)
-    r_gen_optim = torch.optim.Adam(params=r_model_module.conv.parameters(), lr=args.gen_lr)
+    l_optimizer = torch.optim.SGD(params=l_model.parameters(),
+                                  lr=args.lr,
+                                  momentum=args.momentum,
+                                  weight_decay=args.weight_decay,
+                                  nesterov=args.nesterov)
+    r_optimizer = torch.optim.SGD(params=r_model.parameters(),
+                                  lr=args.lr,
+                                  momentum=args.momentum,
+                                  weight_decay=args.weight_decay,
+                                  nesterov=args.nesterov)
 
     if args.resume:
         assert os.path.isfile(args.resume), '=> no checkpoint found at: {}'.format(args.resume)
@@ -668,9 +533,9 @@ def main(context):
 
     if args.evaluate:
         LOG.info('Evaluating the left model: ')
-        validate(eval_loader, l_model, l_validation_log, global_step, args.start_epoch, name='l_test')
+        validate(eval_loader, l_model, l_validation_log, global_step, args.start_epoch)
         LOG.info('Evaluating the right model: ')
-        validate(eval_loader, r_model, r_validation_log, global_step, args.start_epoch, name='r_test')
+        validate(eval_loader, r_model, r_validation_log, global_step, args.start_epoch)
         return
 
     # l_ema_loss, r_ema_loss = calculate_train_ema_loss(train_loader, l_model, r_model)
@@ -678,9 +543,7 @@ def main(context):
     for epoch in range(args.start_epoch, args.epochs):
         start_time = time.time()
         # train for one epoch
-        train_epoch(train_loader, l_model, r_model, le_model, re_model, 
-                    l_optimizer, r_optimizer, l_disc_optim, r_disc_optim, l_gen_optim, r_gen_optim, 
-                    epoch, training_log)
+        train_epoch(train_loader, l_model, r_model, le_model, re_model, l_optimizer, r_optimizer, epoch, training_log)
         LOG.info('--- training epoch in {} seconds ---'.format(time.time()-start_time))
 
         is_best = False
@@ -688,13 +551,13 @@ def main(context):
         if args.evaluation_epochs and (epoch + 1) % args.evaluation_epochs == 0:
             start_time = time.time()
             LOG.info('Evaluating the left model: ')
-            l_prec1 = validate(eval_loader, l_model, l_validation_log, global_step, epoch + 1, name='l_test')
+            l_prec1 = validate(eval_loader, l_model, l_validation_log, global_step, epoch + 1)
             LOG.info('Evaluating the right model: ')
-            r_prec1 = validate(eval_loader, r_model, r_validation_log, global_step, epoch + 1, name='r_test')
+            r_prec1 = validate(eval_loader, r_model, r_validation_log, global_step, epoch + 1)
             LOG.info('Evaluating the left ema model: ')
-            le_prec1 = validate(eval_loader, le_model, l_validation_log, global_step, epoch + 1, name='le_test')
+            l_prec1 = validate(eval_loader, le_model, l_validation_log, global_step, epoch + 1)
             LOG.info('Evaluating the right ema model: ')
-            re_prec1 = validate(eval_loader, re_model, r_validation_log, global_step, epoch + 1, name='re_test')
+            r_prec1 = validate(eval_loader, re_model, r_validation_log, global_step, epoch + 1)
             LOG.info('--- validation in {} seconds ---'.format(time.time() - start_time))
             better_prec1 = l_prec1 if l_prec1 > r_prec1 else r_prec1
             best_prec1 = max(better_prec1, best_prec1)
