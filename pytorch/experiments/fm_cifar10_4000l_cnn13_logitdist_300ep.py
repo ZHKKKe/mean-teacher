@@ -31,7 +31,7 @@ def parameters():
         'consistency_type': 'mse',
         'consistency_rampup': 5,
         'consistency': 100.0,
-        'logit_distance_cost': -1,
+        'logit_distance_cost': .01,
         'weight_decay': 1e-4,
 
         # Optimization

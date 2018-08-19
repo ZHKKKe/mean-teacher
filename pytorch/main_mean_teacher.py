@@ -387,13 +387,16 @@ def adjust_learning_rate(optimizer, epoch, step_in_epoch, total_steps_in_epoch):
     lr = args.lr
     epoch = epoch + step_in_epoch / total_steps_in_epoch
 
-    # LR warm-up to handle large minibatch sizes from https://arxiv.org/abs/1706.02677
-    lr = ramps.linear_rampup(epoch, args.lr_rampup) * (args.lr - args.initial_lr) + args.initial_lr
+    if args.as_co_train_lr:
+        lr *= ramps.ct_lr_rampdown(epoch, args.epochs)
+    else:
+        # LR warm-up to handle large minibatch sizes from https://arxiv.org/abs/1706.02677
+        lr = ramps.linear_rampup(epoch, args.lr_rampup) * (args.lr - args.initial_lr) + args.initial_lr
 
-    # Cosine LR rampdown from https://arxiv.org/abs/1608.03983 (but one cycle only)
-    if args.lr_rampdown_epochs:
-        assert args.lr_rampdown_epochs >= args.epochs
-        lr *= ramps.cosine_rampdown(epoch, args.lr_rampdown_epochs)
+        # Cosine LR rampdown from https://arxiv.org/abs/1608.03983 (but one cycle only)
+        if args.lr_rampdown_epochs:
+            assert args.lr_rampdown_epochs >= args.epochs
+            lr *= ramps.cosine_rampdown(epoch, args.lr_rampdown_epochs)
 
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr

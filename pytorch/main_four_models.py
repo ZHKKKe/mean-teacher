@@ -279,13 +279,13 @@ def train_epoch(train_loader, l_model, r_model, le_model, re_model, l_optimizer,
     else:
         assert False, args.consistency_type
 
-    # residual_logit_criterion = losses.symmetric_mse_loss
+    residual_logit_criterion = losses.symmetric_mse_loss
 
     meters = AverageMeterSet()
 
     # calculate epoch initial ema loss values
-    if epoch != 0 and args.epoch_init_ema_loss:
-        l_ema_loss, r_ema_loss = calculate_train_ema_loss(train_loader, l_model, r_model)
+    # if epoch != 0 and args.epoch_init_ema_loss:
+        # l_ema_loss, r_ema_loss = calculate_train_ema_loss(train_loader, l_model, r_model)
 
     l_model.train()
     r_model.train()
@@ -333,12 +333,26 @@ def train_epoch(train_loader, l_model, r_model, le_model, re_model, l_optimizer,
             re_logit1, re_logit2 = re_model_out
 
         if args.logit_distance_cost >= 0:
-            LOG.error('compite_buddy not support logit_distance_cost now.')
+            l_class_logit, l_cons_logit = l_logit1, l_logit2
+            r_class_logit, r_cons_logit = r_logit1, r_logit2
+            le_class_logit, le_cons_logit = le_logit1, le_logit2
+            re_class_logit, re_cons_logit = re_logit1, re_logit2
 
-        l_class_logit, l_cons_logit = l_logit1, l_logit1
-        r_class_logit, r_cons_logit = r_logit1, r_logit1
-        le_class_logit, le_cons_logit = le_logit1, le_logit1
-        re_class_logit, re_cons_logit = re_logit1, re_logit1
+            l_res_loss = args.logit_distance_cost * residual_logit_criterion(l_class_logit, l_cons_logit) / minibatch_size
+            r_res_loss = args.logit_distance_cost * residual_logit_criterion(r_class_logit, r_cons_logit) / minibatch_size
+
+            meters.update('l_res_loss', l_res_loss.data[0])
+            meters.update('r_res_loss', r_res_loss.data[0])
+        else:
+            l_class_logit, l_cons_logit = l_logit1, l_logit1
+            r_class_logit, r_cons_logit = r_logit1, r_logit1
+            le_class_logit, le_cons_logit = le_logit1, le_logit1
+            re_class_logit, re_cons_logit = re_logit1, re_logit1
+
+            l_res_loss = 0.0
+            r_res_loss = 0.0
+            meters.update('l_res_loss', 0.0)
+            meters.update('r_res_loss', 0.0)
 
         l_class_loss = class_criterion(l_class_logit, target_var) / minibatch_size
         r_class_loss = class_criterion(r_class_logit, target_var) / minibatch_size
@@ -352,6 +366,9 @@ def train_epoch(train_loader, l_model, r_model, le_model, re_model, l_optimizer,
             meters.update('re_class_loss', re_class_loss.data[0])
 
         l_loss, r_loss = l_class_loss, r_class_loss
+
+        l_loss += l_res_loss
+        r_loss += r_res_loss
 
         # update ema loss values
         if args.ema_model_judge:
@@ -368,22 +385,26 @@ def train_epoch(train_loader, l_model, r_model, le_model, re_model, l_optimizer,
             consistency_weight = calculate_consistency_scale(epoch)
             meters.update('cons_weight', consistency_weight)
 
-            le_cons_logit = Variable(le_cons_logit.detach().data, requires_grad=False)
-            l_consistency_loss = consistency_weight * consistency_criterion(l_cons_logit, le_cons_logit) / minibatch_size
+            le_class_logit = Variable(le_class_logit.detach().data, requires_grad=False)
+            l_consistency_loss = consistency_weight * consistency_criterion(l_cons_logit, le_class_logit) / minibatch_size
             l_loss += l_consistency_loss
             meters.update('l_cons_loss', l_consistency_loss.data[0])
 
 
-            re_cons_logit = Variable(re_cons_logit.detach().data, requires_grad=False)
-            r_consistency_loss = consistency_weight * consistency_criterion(r_cons_logit, re_cons_logit) / minibatch_size
+            re_class_logit = Variable(re_class_logit.detach().data, requires_grad=False)
+            r_consistency_loss = consistency_weight * consistency_criterion(r_cons_logit, re_class_logit) / minibatch_size
             r_loss += r_consistency_loss
             meters.update('r_cons_loss', r_consistency_loss.data[0])
 
             # left model is better
             if l_ema_loss < r_ema_loss:
                 # if l_class_loss.data[0] < r_class_loss.data[0]:
-                l_cons_logit = Variable(l_cons_logit.detach().data, requires_grad=False)
-                consistency_loss = consistency_weight * consistency_criterion(r_cons_logit, l_cons_logit) / minibatch_size
+                
+                # --- TODO: how to setting cons between competitive models ---
+                tar_l_class_logit = Variable(l_class_logit.detach().data, requires_grad=False)
+                consistency_loss = consistency_weight * consistency_criterion(r_cons_logit, tar_l_class_logit) / minibatch_size
+                # ------------------------------------------------------------
+
                 r_loss += consistency_loss
                 meters.update('better_model', -1.)  # -1 == left model
                 meters.update('cons_loss', consistency_loss.data[0])
@@ -391,8 +412,12 @@ def train_epoch(train_loader, l_model, r_model, le_model, re_model, l_optimizer,
             # right model is better
             elif l_ema_loss > r_ema_loss:
                 # elif l_class_loss.data[0] > r_class_loss.data[0]:
-                r_cons_logit = Variable(r_cons_logit.detach().data, requires_grad=False)
-                consistency_loss = consistency_weight * consistency_criterion(l_cons_logit, r_cons_logit) / minibatch_size
+
+                # --- TODO: how to setting cons between competitive models ---
+                tar_r_class_logit = Variable(r_class_logit.detach().data, requires_grad=False)
+                consistency_loss = consistency_weight * consistency_criterion(l_cons_logit, tar_r_class_logit) / minibatch_size
+                # ------------------------------------------------------------
+                
                 l_loss += consistency_loss
                 meters.update('better_model', 1.)    # 1 == right model
                 meters.update('cons_loss', consistency_loss.data[0])
@@ -460,6 +485,8 @@ def train_epoch(train_loader, l_model, r_model, le_model, re_model, l_optimizer,
                      'R-Class {meters[r_class_loss]:.4f}\t'
                      'L-Cons {meters[l_cons_loss]:.4f}\t'
                      'R-Cons {meters[r_cons_loss]:.4f}\t'
+                     'R-Res {meters[l_res_loss]:.4f}\t'
+                     'R-Res {meters[r_res_loss]:.4f}\t'
                      'Cons {meters[cons_loss]:.4f}\t'
                      'Better-M {better.sum:.1f}\n'
                      'L-Prec@1 {meters[l_top1]:.3f}\t'
