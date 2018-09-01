@@ -104,6 +104,15 @@ def create_parser():
     parser.add_argument('--ema-model-judge', default=False, type=str2bool, metavar='BOOL',
                         help='')
 
+    parser.add_argument('--draw-curve', default=False, type=str2bool, metavar='BOOL',
+                        help='')
+
+    parser.add_argument('--logits-disc', default=False, type=str2bool, metavar='BOOL',
+                        help='')
+
+    parser.add_argument('--disc-lr', '--disc-learning-rate', default=0.00005, type=float,
+                        metavar='LR', help='max disc learning rate')
+
     return parser
 
 

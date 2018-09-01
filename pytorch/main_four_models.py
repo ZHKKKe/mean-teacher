@@ -30,6 +30,68 @@ global_step = 0
 l_ema_loss = 0
 r_ema_loss = 0
 
+tmp_path = ''
+
+def pca_drawer(x, y, epoch, name):
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+
+    global tmp_path
+
+    color_map = {
+        -1: 'indianred',
+        0: 'orange',
+        1: 'khaki',
+        2: 'lightgreen',
+        3: 'paleturquoise',
+        4: 'dodgerblue',
+        5: 'lightsteelblue',
+        6: 'slategray',
+        7: 'mediumpurple',
+        8: 'hotpink',
+        9: 'silver',
+    }
+
+    plt.clf()
+
+    plt.title(name)
+    plt.grid(True)
+    plt.xlabel('x')
+    plt.ylabel('y')
+    plt.xticks(fontsize=7)
+    plt.yticks(fontsize=7)
+    data_0 = x[..., 0]
+    data_1 = x[..., 1]
+
+    # plt.axis('tight')
+    x_side = 0.3 * (np.max(data_0) - np.min(data_0))
+    y_side = 0.3 * (np.max(data_1) - np.min(data_1))
+    plt.axis([
+        np.min(data_0) - x_side,
+        np.max(data_0) + x_side,
+        np.min(data_1) - y_side,
+        np.max(data_1) + y_side
+    ])
+
+    # split data
+    data = {}
+    for i in range(-1, 10):
+        data[i] = [[], []]
+
+    for idx, label in enumerate(y):
+        data[label][0].append(x[idx][0])
+        data[label][1].append(x[idx][1])
+
+    for i in range(-1, 10):
+        plt.scatter(data[i][0], data[i][1], label=i, marker='.', s=3, c=color_map[i])
+
+    plt.legend(loc='upper right')
+    filename = name + '_{}.jpg'.format(epoch)
+    file_path = os.path.join(tmp_path, filename)
+    plt.savefig(file_path, dpi=300)
+    plt.close('all')
+
 
 def update_ema_variables(model, ema_model, alpha, global_step):
     # Use the true average until the exponential average is more correct
@@ -140,13 +202,16 @@ def save_checkpoint(state, is_best, dirpath, epoch):
         shutil.copyfile(checkpoint_path, best_path)
         LOG.info("--- checkpoint copied to %s ---" % best_path)
 
-def validate(eval_loader, model, log, global_step, epoch):
+def validate(eval_loader, model, log, global_step, epoch, name=''):
     class_criterion = nn.CrossEntropyLoss(
         size_average=False, ignore_index=NO_LABEL).cuda()
     meters = AverageMeterSet()
 
     # switch to evaluate mode
     model.eval()
+
+    pca_features = []
+    pca_labeles = []
 
     end = time.time()
     for i, (input, target) in enumerate(eval_loader):
@@ -161,11 +226,29 @@ def validate(eval_loader, model, log, global_step, epoch):
         assert labeled_minibatch_size > 0
         meters.update('labeled_minibatch_size', labeled_minibatch_size)
 
+        if args.arch in ['cifar_cnn13']:
+            model_out = model(input_var, debug=True)
+        else:
+            model_out = model(input_var)
+        
+        feature = None
+        if len(model_out) == 2:
+            output1, output2 = model_out
+        elif len(model_out) == 3:
+            output1, output2, feature = model_out
+
         # compute output
-        output1, output2 = model(input_var)
-        softmax1, softmax2 = F.softmax(
-            output1, dim=1), F.softmax(
-                output2, dim=1)
+        # output1, output2 = model(input_var)
+        softmax1, softmax2 = F.softmax(output1, dim=1), F.softmax(output2, dim=1)
+        
+        if args.draw_curve and feature is not None:
+            f_data = output1.data.cpu().numpy()
+            # f_data = feature.data.cpu().numpy()
+            t_data = target_var.data.cpu().numpy()
+            for idx, feature in enumerate(f_data):
+                pca_features.append(feature)
+                pca_labeles.append(t_data[idx])
+
         class_loss = class_criterion(output1, target_var) / minibatch_size
 
         # measure accuracy and record loss
@@ -198,6 +281,16 @@ def validate(eval_loader, model, log, global_step, epoch):
             **meters.averages(),
             **meters.sums()
         })
+
+    if args.draw_curve:
+        LOG.info('--------------- PCA FEATURE DRAWER ---------------')
+        from sklearn.decomposition import PCA
+        pca_features = np.asarray(pca_features)
+        pca_labeles = np.asarray(pca_labeles)
+        pca = PCA(n_components=2)
+        pca_results = pca.fit_transform(pca_features)
+        pca_drawer(pca_results, pca_labeles, epoch=epoch, name=name)
+        LOG.info('--------------------------------------------------')
 
     return meters['top1'].avg
 
@@ -254,7 +347,8 @@ def calculate_train_ema_loss(train_loader, l_model, r_model):
 
     return meters['l_class_loss'].avg, meters['r_class_loss'].avg
 
-def train_epoch(train_loader, l_model, r_model, le_model, re_model, l_optimizer, r_optimizer, epoch, log):
+def train_epoch(train_loader, l_model, r_model, le_model, re_model, disc_model, 
+                l_optimizer, r_optimizer, disc_optimizer, epoch, log):
     global global_step
     global l_ema_loss
     global r_ema_loss
@@ -294,6 +388,7 @@ def train_epoch(train_loader, l_model, r_model, le_model, re_model, l_optimizer,
 
     end = time.time()
     for i, ((l_input, r_input), target) in enumerate(train_loader):
+        
         meters.update('data_time', time.time() - end)
 
         # adjust learning rate, just for ramp-down now
@@ -316,7 +411,6 @@ def train_epoch(train_loader, l_model, r_model, le_model, re_model, l_optimizer,
         le_model_out = le_model(r_input_var)
         re_model_out = re_model(l_input_var)
 
-        # now just use 2 output for cifar10 dataset
         if isinstance(l_model_out, Variable):
             assert args.logit_distance_cost < 0
             l_logit1 = l_model_out
@@ -430,7 +524,6 @@ def train_epoch(train_loader, l_model, r_model, le_model, re_model, l_optimizer,
             consistency_loss = 0
             meters.update('cons_loss', 0)
 
-
         assert not (np.isnan(l_loss.data[0]) or l_loss.data[0] > 1e5), 'L-Loss explosion: {}'.format(l_loss.data[0])
         assert not (np.isnan(r_loss.data[0]) or r_loss.data[0] > 1e5), 'R-Loss explosion: {}'.format(r_loss.data[0])
         meters.update('l_loss', l_loss.data[0])
@@ -470,6 +563,37 @@ def train_epoch(train_loader, l_model, r_model, le_model, re_model, l_optimizer,
 
         update_ema_variables(l_model, le_model, args.ema_decay, global_step)
         update_ema_variables(r_model, re_model, args.ema_decay, global_step)
+        
+        # disc model judge logits between L/R models
+        if args.logits_disc:
+            tiny = 1e-15
+            l_model_out = l_model(l_input_var)
+            r_model_out = r_model(r_input_var)
+
+            if isinstance(l_model_out, Variable):
+                l_logit1 = l_model_out
+                r_logit1 = r_model_out
+            else:
+                assert len(l_model_out) == 2
+                assert len(r_model_out) == 2
+                l_logit1, l_logit2 = l_model_out
+                r_logit1, r_logit2 = r_model_out
+
+
+            l_disc_out = disc_model(l_logit1)
+            r_disc_out = disc_model(r_logit1)
+
+            disc_loss = -torch.mean(torch.log(l_disc_out + tiny) + torch.log(1 - r_disc_out + tiny))
+
+            meters.update('disc_loss', disc_loss.data[0])
+            if i % args.print_freq == 0:
+                LOG.info('disc_loss: {meters[disc_loss]:.4f}'.format(meters=meters))
+                LOG.info('l_disc_out: {0}'.format(list(l_disc_out.data.cpu().numpy().tolist())[:5]))
+                LOG.info('r_disc_out: {0}'.format(list(r_disc_out.data.cpu().numpy().tolist())[:5]))
+
+            disc_optimizer.zero_grad()
+            disc_loss.backward()
+            disc_optimizer.step()
 
         global_step += 1
         meters.update('batch_time', time.time() - end)
@@ -509,6 +633,9 @@ def main(context):
     global l_ema_loss
     global r_ema_loss
 
+    global tmp_path
+
+    tmp_path = context.tmp_dir
     checkpoint_path = context.transient_dir
     training_log = context.create_train_log('training')
     l_validation_log = context.create_train_log('l_validation')
@@ -522,6 +649,13 @@ def main(context):
     le_model = create_compite_model(side='le', num_classes=num_classes)
     re_model = create_compite_model(side='re', num_classes=num_classes)
 
+    disc_model = None
+    if args.logits_disc:
+        disc_model_factory = architectures.__dict__[args.arch + '_disc']
+        disc_model_params = dict(pretrained=args.pretrained, in_dim=10, out_dim=1)
+        disc_model = disc_model_factory(**disc_model_params)
+        disc_model = nn.DataParallel(disc_model).cuda()
+        
     copy_model_variables(l_model, le_model)
     copy_model_variables(r_model, re_model)
 
@@ -529,6 +663,7 @@ def main(context):
     LOG.info(parameters_string(r_model))
     LOG.info(parameters_string(le_model))
     LOG.info(parameters_string(re_model))
+    LOG.info(parameters_string(disc_model))
 
     l_optimizer = torch.optim.SGD(params=l_model.parameters(),
                                   lr=args.lr,
@@ -540,7 +675,11 @@ def main(context):
                                   momentum=args.momentum,
                                   weight_decay=args.weight_decay,
                                   nesterov=args.nesterov)
-
+                                  
+    disc_optimizer = None
+    if args.logits_disc:
+        disc_optimizer = torch.optim.Adam(params=disc_model.parameters(), lr=args.disc_lr)
+    
     if args.resume:
         assert os.path.isfile(args.resume), '=> no checkpoint found at: {}'.format(args.resume)
         LOG.info('=> loading checkpoint: {}'.format(args.resume))
@@ -560,9 +699,9 @@ def main(context):
 
     if args.evaluate:
         LOG.info('Evaluating the left model: ')
-        validate(eval_loader, l_model, l_validation_log, global_step, args.start_epoch)
+        validate(eval_loader, l_model, l_validation_log, global_step, args.start_epoch, name='l_test_pca')
         LOG.info('Evaluating the right model: ')
-        validate(eval_loader, r_model, r_validation_log, global_step, args.start_epoch)
+        validate(eval_loader, r_model, r_validation_log, global_step, args.start_epoch, name='r_test_pca')
         return
 
     # l_ema_loss, r_ema_loss = calculate_train_ema_loss(train_loader, l_model, r_model)
@@ -570,7 +709,8 @@ def main(context):
     for epoch in range(args.start_epoch, args.epochs):
         start_time = time.time()
         # train for one epoch
-        train_epoch(train_loader, l_model, r_model, le_model, re_model, l_optimizer, r_optimizer, epoch, training_log)
+        train_epoch(train_loader, l_model, r_model, le_model, re_model, disc_model, 
+                    l_optimizer, r_optimizer, disc_optimizer, epoch, training_log)
         LOG.info('--- training epoch in {} seconds ---'.format(time.time()-start_time))
 
         is_best = False
@@ -578,13 +718,13 @@ def main(context):
         if args.evaluation_epochs and (epoch + 1) % args.evaluation_epochs == 0:
             start_time = time.time()
             LOG.info('Evaluating the left model: ')
-            l_prec1 = validate(eval_loader, l_model, l_validation_log, global_step, epoch + 1)
+            l_prec1 = validate(eval_loader, l_model, l_validation_log, global_step, epoch + 1, name='l_test_pca')
             LOG.info('Evaluating the right model: ')
-            r_prec1 = validate(eval_loader, r_model, r_validation_log, global_step, epoch + 1)
+            r_prec1 = validate(eval_loader, r_model, r_validation_log, global_step, epoch + 1, name='r_test_pca')
             LOG.info('Evaluating the left ema model: ')
-            l_prec1 = validate(eval_loader, le_model, l_validation_log, global_step, epoch + 1)
+            l_prec1 = validate(eval_loader, le_model, l_validation_log, global_step, epoch + 1, name='el_test_pca')
             LOG.info('Evaluating the right ema model: ')
-            r_prec1 = validate(eval_loader, re_model, r_validation_log, global_step, epoch + 1)
+            r_prec1 = validate(eval_loader, re_model, r_validation_log, global_step, epoch + 1, name='er_test_pca')
             LOG.info('--- validation in {} seconds ---'.format(time.time() - start_time))
             better_prec1 = l_prec1 if l_prec1 > r_prec1 else r_prec1
             best_prec1 = max(better_prec1, best_prec1)

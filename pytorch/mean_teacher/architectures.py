@@ -58,10 +58,18 @@ def cifar_cnn13_fc(pretrained=False, **kwargs):
     model = CNN13_FC(**kwargs)
     return model
 
+
 @export
 def cifar_cnn13_multi_fc(pretrained=False, **kwargs):
     assert not pretrained
     model = CNN13_M_FC(**kwargs)
+    return model
+
+
+@export
+def cifar_cnn13_disc(pretrained=False, **kwargs):
+    assert not pretrained
+    model = CNN13_Disc(**kwargs)
     return model
 
 
@@ -358,9 +366,14 @@ class CNN13(nn.Module):
         self.conv = CNN13_CONV(num_classes)
         self.fc = CNN13_FC(num_classes)
 
-    def forward(self, x):
+    def forward(self, x, debug=False):
         x = self.conv.forward(x)
-        return self.fc.forward(x)
+        out1, out2 = self.fc.forward(x)
+        if debug:
+            return out1, out2, x
+        else:
+            return out1, out2
+
 
 class CNN13_CONV(nn.Module):
     """
@@ -442,3 +455,20 @@ class CNN13_M_FC(nn.Module):
 
     def forward(self, x, idx):
         return self.fcs[idx](x)
+
+
+class CNN13_Disc(nn.Module):
+    def __init__(self, in_dim=10, out_dim=1):
+        super(CNN13_Disc, self).__init__()
+
+        self.disc1 = nn.Linear(in_dim, 1024)
+        self.disc2 = nn.Linear(1024, 1024)
+        self.disc3 = nn.Linear(1024, out_dim)
+    
+    def forward(self, x):
+        x = self.disc1(x)
+        x = F.relu(x)
+        x = self.disc2(x)
+        x = F.relu(x)
+
+        return F.sigmoid(self.disc3(x))

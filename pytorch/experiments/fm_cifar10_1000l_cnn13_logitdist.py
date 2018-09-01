@@ -7,7 +7,10 @@ import main_four_models
 from mean_teacher.cli import parse_dict_args
 from mean_teacher.run_context import RunContext
 
-LOG = logging.getLogger('runner')
+LOG = logging.getLogger('main')
+fh = logging.FileHandler('fm_cifar10_1000l_cnn13_logitdist.log')
+fh.setLevel(logging.INFO)
+LOG.addHandler(fh)
 
 def parameters():
     defaults = {
@@ -47,6 +50,11 @@ def parameters():
         'ema_model_judge': False,
 
         'as_co_train_lr': True,
+
+        'draw_curve': True,
+
+        'logits_disc': True,
+        'disc_lr': 0.00005,
     }
 
     # 4000 labels:

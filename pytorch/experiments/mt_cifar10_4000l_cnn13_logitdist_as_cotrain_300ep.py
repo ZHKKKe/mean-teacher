@@ -48,7 +48,7 @@ def parameters():
 
         # Optimization
         'lr_rampup': 0,
-        'base_lr': 0.1,
+        'base_lr': 0.05,
         'nesterov': True,
 
         'as_co_train_lr': True,
