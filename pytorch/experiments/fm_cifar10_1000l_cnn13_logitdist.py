@@ -47,14 +47,14 @@ def parameters():
         'epoch_init_ema_loss': False, 
 
         'ema_decay': 0.97,
-        'ema_model_judge': False,
+        'ema_model_judge': True,
 
         'as_co_train_lr': True,
 
-        'draw_curve': True,
+        'draw_curve': False,
 
-        'logits_disc': True,
-        'disc_lr': 0.00005,
+        'logits_disc': False,
+        'disc_lr': 0,
     }
 
     # 4000 labels:

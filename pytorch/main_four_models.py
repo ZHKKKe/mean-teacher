@@ -496,7 +496,8 @@ def train_epoch(train_loader, l_model, r_model, le_model, re_model, disc_model,
                 
                 # --- TODO: how to setting cons between competitive models ---
                 tar_l_class_logit = Variable(l_class_logit.detach().data, requires_grad=False)
-                consistency_loss = consistency_weight * consistency_criterion(r_cons_logit, tar_l_class_logit) / minibatch_size
+                tar_le_class_logit = Variable(le_class_logit.detach().data, requires_grad=False)
+                consistency_loss = consistency_weight * consistency_criterion(r_cons_logit, tar_le_class_logit) / minibatch_size
                 # ------------------------------------------------------------
 
                 r_loss += consistency_loss
@@ -509,7 +510,8 @@ def train_epoch(train_loader, l_model, r_model, le_model, re_model, disc_model,
 
                 # --- TODO: how to setting cons between competitive models ---
                 tar_r_class_logit = Variable(r_class_logit.detach().data, requires_grad=False)
-                consistency_loss = consistency_weight * consistency_criterion(l_cons_logit, tar_r_class_logit) / minibatch_size
+                tar_re_class_logit = Variable(re_class_logit.detach().data, requires_grad=False)
+                consistency_loss = consistency_weight * consistency_criterion(l_cons_logit, tar_re_class_logit) / minibatch_size
                 # ------------------------------------------------------------
                 
                 l_loss += consistency_loss
@@ -649,13 +651,6 @@ def main(context):
     le_model = create_compite_model(side='le', num_classes=num_classes)
     re_model = create_compite_model(side='re', num_classes=num_classes)
 
-    disc_model = None
-    if args.logits_disc:
-        disc_model_factory = architectures.__dict__[args.arch + '_disc']
-        disc_model_params = dict(pretrained=args.pretrained, in_dim=10, out_dim=1)
-        disc_model = disc_model_factory(**disc_model_params)
-        disc_model = nn.DataParallel(disc_model).cuda()
-        
     copy_model_variables(l_model, le_model)
     copy_model_variables(r_model, re_model)
 
@@ -663,7 +658,6 @@ def main(context):
     LOG.info(parameters_string(r_model))
     LOG.info(parameters_string(le_model))
     LOG.info(parameters_string(re_model))
-    LOG.info(parameters_string(disc_model))
 
     l_optimizer = torch.optim.SGD(params=l_model.parameters(),
                                   lr=args.lr,
@@ -675,7 +669,15 @@ def main(context):
                                   momentum=args.momentum,
                                   weight_decay=args.weight_decay,
                                   nesterov=args.nesterov)
-                                  
+
+    disc_model = None
+    if args.logits_disc:
+        disc_model_factory = architectures.__dict__[args.arch + '_disc']
+        disc_model_params = dict(pretrained=args.pretrained, in_dim=10, out_dim=1)
+        disc_model = disc_model_factory(**disc_model_params)
+        disc_model = nn.DataParallel(disc_model).cuda()
+        LOG.info(parameters_string(disc_model))
+
     disc_optimizer = None
     if args.logits_disc:
         disc_optimizer = torch.optim.Adam(params=disc_model.parameters(), lr=args.disc_lr)
