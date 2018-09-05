@@ -105,6 +105,8 @@ def create_parser():
                         help='')
 
     parser.add_argument('--smooth-neighbor-scale', default=None, type=float, metavar='WEIGHT')
+    parser.add_argument('--sn-fc-layer', default=False, type=str2bool, metavar='BOOL',
+                        help='')
 
     return parser
 

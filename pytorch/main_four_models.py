@@ -162,7 +162,7 @@ def validate(eval_loader, model, log, global_step, epoch):
         meters.update('labeled_minibatch_size', labeled_minibatch_size)
 
         # compute output
-        output1, output2 = model(input_var)
+        output1, output2 = model(input_var, validate=True)
         softmax1, softmax2 = F.softmax(
             output1, dim=1), F.softmax(
                 output2, dim=1)
@@ -281,6 +281,9 @@ def train_epoch(train_loader, l_model, r_model, le_model, re_model, l_optimizer,
 
     residual_logit_criterion = losses.symmetric_mse_loss
     feature_criterion = losses.feature_mse_loss
+    
+    sn_criterion = losses.softmax_mse_loss
+
 
     meters = AverageMeterSet()
 
@@ -312,10 +315,10 @@ def train_epoch(train_loader, l_model, r_model, le_model, re_model, l_optimizer,
         assert labeled_minibatch_size > 0
         meters.update('labeled_minibatch_size', labeled_minibatch_size)
 
-        l_model_out, l_x = l_model(l_input_var, debug=True)
-        r_model_out, r_x = r_model(r_input_var, debug=True)
-        le_model_out = le_model(r_input_var)
-        re_model_out = re_model(l_input_var)
+        l_model_out, l_x = l_model(l_input_var, debug=True, bs=minibatch_size, lbs=labeled_minibatch_size)
+        r_model_out, r_x = r_model(r_input_var, debug=True, bs=minibatch_size, lbs=labeled_minibatch_size)
+        le_model_out = le_model(r_input_var, bs=minibatch_size, lbs=labeled_minibatch_size)
+        re_model_out = re_model(l_input_var, bs=minibatch_size, lbs=labeled_minibatch_size)
 
         # now just use 2 output for cifar10 dataset
         if isinstance(l_model_out, Variable):
@@ -325,46 +328,100 @@ def train_epoch(train_loader, l_model, r_model, le_model, re_model, l_optimizer,
             le_logit1 = le_model_out
             re_logit1 = re_model_out
 
-        else:
-            assert len(l_model_out) == 2
+        elif len(l_model_out) == 2:
             assert len(r_model_out) == 2
             l_logit1, l_logit2 = l_model_out
             r_logit1, r_logit2 = r_model_out
             le_logit1, le_logit2 = le_model_out
             re_logit1, re_logit2 = re_model_out
 
+        elif len(l_model_out) == 3:
+            assert len(r_model_out) == 3
+            l_logit1, l_logit2, l_sn_logit = l_model_out
+            r_logit1, r_logit2, r_sn_logit = r_model_out
+            le_logit1, le_logit2, le_sn_logit = le_model_out
+            re_logit1, re_logit2, re_sn_logit = re_model_out
+
+        edge = 1
+        l_feature_loss = 0
+        r_feature_loss = 0
         if args.smooth_neighbor_scale is not None:
+
             # distance between labeled/unlabeled features
             _, le_prec_labeles = torch.max(F.softmax(le_logit1, dim=1), 1)
             _, re_prec_labeles = torch.max(F.softmax(re_logit1, dim=1), 1)
 
-            le_ul_prec_labeles, le_l_prec_labeles = le_prec_labeles.split(labeled_minibatch_size)
-            re_ul_prec_labeles, re_l_prec_labeles = re_prec_labeles.split(labeled_minibatch_size)
+            l_pairs_index = np.array([_ for _ in range(0, minibatch_size)])
+            r_pairs_index = np.array([_ for _ in range(0, minibatch_size)])
+            np.random.shuffle(l_pairs_index)
+            np.random.shuffle(r_pairs_index)
 
-            # 0 means xi, xj have same predicts by teacher model
-            le_w = le_ul_prec_labeles - le_l_prec_labeles
-            re_w = re_ul_prec_labeles - re_l_prec_labeles
+            # left model
+            for idx, v in enumerate(l_pairs_index):
+                if idx % 2 != 0:
+                    continue
 
-            l_ul_x, l_l_x = l_x.split(labeled_minibatch_size)
-            r_ul_x, r_l_x = r_x.split(labeled_minibatch_size)
+                sample_idx1 = l_pairs_index[idx]
+                sample_idx2 = l_pairs_index[idx+1]
+                label1 = le_prec_labeles[sample_idx1]
+                label2 = le_prec_labeles[sample_idx2]
 
-            edge = 1
-            l_feature_loss = 0
-            for idx, value in enumerate(le_w):
-                l_feature_loss += feature_criterion(l_ul_x[idx], l_l_x[idx], edge, value.data[0] == 0)
+                feature1 = l_x[sample_idx1]
+                feature2 = l_x[sample_idx2]
+
+                # # print(sample_idx1, sample_idx2)
+                # # print(label1.data[0], label2.data[0])
+
+                l_feature_loss += feature_criterion(feature1, feature2, edge, label1.data[0] == label2.data[0])
+
+            # right model
+            for idx, v in enumerate(r_pairs_index):
+                if idx % 2 != 0:
+                    continue
+
+                sample_idx1 = r_pairs_index[idx]
+                sample_idx2 = r_pairs_index[idx+1]
+
+                label1 = re_prec_labeles[sample_idx1]
+                label2 = re_prec_labeles[sample_idx2]
+
+                feature1 = r_x[sample_idx1]
+                feature2 = r_x[sample_idx2]
+
+                r_feature_loss += feature_criterion(feature1, feature2, edge, label1.data[0] == label2.data[0])
+
+        # ------------------------
+            # if args.sn_fc_layer:
+                # labels from teacher-network
+                # print('le_w_1:', le_w)
+
+                # le_w[le_w != 0] = 1
+                # re_w[re_w != 0] = 1 # [minibatch_size/2]
+
+                # print('le_w_2:', le_w)
+                # print('l_sn_logit: ', l_sn_logit)
+                # l_feature_loss = sn_criterion(l_sn_logit, le_w)
+                # print('l_f_loss: ', l_feature_loss)
                 
-            r_feature_loss = 0
-            for idx, value in enumerate(re_w):
-                r_feature_loss += feature_criterion(r_ul_x[idx], r_l_x[idx], edge, value.data[0] == 0)
+
+            # l_ul_x, l_l_x = l_x.split(labeled_minibatch_size)
+            # r_ul_x, r_l_x = r_x.split(labeled_minibatch_size)
+
+            # edge = 1
+            # l_feature_loss = 0
+            # for idx, value in enumerate(le_w):
+            #     l_feature_loss += feature_criterion(l_ul_x[idx], l_l_x[idx], edge, value.data[0] == 0)
                 
+            # r_feature_loss = 0
+            # for idx, value in enumerate(re_w):
+            #     r_feature_loss += feature_criterion(r_ul_x[idx], r_l_x[idx], edge, value.data[0] == 0)
+        # ------------------------
 
             l_feature_loss = l_feature_loss * args.smooth_neighbor_scale * calculate_consistency_scale(epoch) / labeled_minibatch_size
             r_feature_loss = r_feature_loss * args.smooth_neighbor_scale * calculate_consistency_scale(epoch) / labeled_minibatch_size
             meters.update('l_feature_loss', l_feature_loss.data[0])
             meters.update('r_feature_loss', r_feature_loss.data[0])
         else:
-            l_feature_loss = 0
-            r_feature_loss = 0
             meters.update('l_feature_loss', 0)
             meters.update('r_feature_loss', 0)
 

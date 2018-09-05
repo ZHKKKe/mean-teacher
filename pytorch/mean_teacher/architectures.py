@@ -358,11 +358,14 @@ class CNN13(nn.Module):
         self.conv = CNN13_CONV(num_classes)
         self.fc = CNN13_FC(num_classes)
 
-    def forward(self, x, debug=False):
+    def forward(self, x, debug=False, bs=0, lbs=0, validate=False):
         x = self.conv.forward(x)
+        if validate:
+            return self.fc.forward(x, validate=True)
+            
         if debug:
-            return self.fc.forward(x), x
-        return self.fc.forward(x)
+            return self.fc.forward(x, bs=bs, lbs=lbs), x
+        return self.fc.forward(x, bs=bs, lbs=lbs)
 
 class CNN13_CONV(nn.Module):
     """
@@ -429,8 +432,18 @@ class CNN13_FC(nn.Module):
         self.fc1 = weight_norm(nn.Linear(128, num_classes))
         self.fc2 = weight_norm(nn.Linear(128, num_classes))
 
-    def forward(self, x):
-        return self.fc1(x), self.fc2(x)
+        '''this layer try to work as smooth neighbor'''
+        self.fc_sn = nn.Linear(256, 1)
+
+    def forward(self, x, bs=0, lbs=0, validate=False):
+        if validate:
+            return self.fc1(x), self.fc2(x)
+
+        assert bs == lbs * 2
+        x_ = x.split(lbs)
+        x_sn = torch.cat((x_[0], x_[1]), dim=1)
+
+        return self.fc1(x), self.fc2(x), self.fc_sn(x_sn)
 
 
 class CNN13_M_FC(nn.Module):
