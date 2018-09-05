@@ -13,6 +13,21 @@ from torch.nn import functional as F
 from torch.autograd import Variable
 
 
+def feature_mse_loss(inputs, targets, edge, same_sample=False):
+    assert inputs.size() == targets.size()
+    num_dims = inputs.size()[0]
+    distance = F.mse_loss(inputs, targets, size_average=False) / num_dims
+    if same_sample:
+        return distance
+    else:
+        value = distance.mul_(-1).add_(edge)
+        if value.data[0] < 0:
+            value.mul_(0.0)
+            return value
+        else:
+            return value
+
+
 def softmax_mse_loss(input_logits, target_logits):
     """Takes softmax on both sides and returns MSE loss
 

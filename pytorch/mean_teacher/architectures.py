@@ -358,8 +358,10 @@ class CNN13(nn.Module):
         self.conv = CNN13_CONV(num_classes)
         self.fc = CNN13_FC(num_classes)
 
-    def forward(self, x):
+    def forward(self, x, debug=False):
         x = self.conv.forward(x)
+        if debug:
+            return self.fc.forward(x), x
         return self.fc.forward(x)
 
 class CNN13_CONV(nn.Module):

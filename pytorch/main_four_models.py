@@ -280,6 +280,7 @@ def train_epoch(train_loader, l_model, r_model, le_model, re_model, l_optimizer,
         assert False, args.consistency_type
 
     residual_logit_criterion = losses.symmetric_mse_loss
+    feature_criterion = losses.feature_mse_loss
 
     meters = AverageMeterSet()
 
@@ -311,8 +312,8 @@ def train_epoch(train_loader, l_model, r_model, le_model, re_model, l_optimizer,
         assert labeled_minibatch_size > 0
         meters.update('labeled_minibatch_size', labeled_minibatch_size)
 
-        l_model_out = l_model(l_input_var)
-        r_model_out = r_model(r_input_var)
+        l_model_out, l_x = l_model(l_input_var, debug=True)
+        r_model_out, r_x = r_model(r_input_var, debug=True)
         le_model_out = le_model(r_input_var)
         re_model_out = re_model(l_input_var)
 
@@ -331,6 +332,41 @@ def train_epoch(train_loader, l_model, r_model, le_model, re_model, l_optimizer,
             r_logit1, r_logit2 = r_model_out
             le_logit1, le_logit2 = le_model_out
             re_logit1, re_logit2 = re_model_out
+
+        if args.smooth_neighbor_scale is not None:
+            # distance between labeled/unlabeled features
+            _, le_prec_labeles = torch.max(F.softmax(le_logit1, dim=1), 1)
+            _, re_prec_labeles = torch.max(F.softmax(re_logit1, dim=1), 1)
+
+            le_ul_prec_labeles, le_l_prec_labeles = le_prec_labeles.split(labeled_minibatch_size)
+            re_ul_prec_labeles, re_l_prec_labeles = re_prec_labeles.split(labeled_minibatch_size)
+
+            # 0 means xi, xj have same predicts by teacher model
+            le_w = le_ul_prec_labeles - le_l_prec_labeles
+            re_w = re_ul_prec_labeles - re_l_prec_labeles
+
+            l_ul_x, l_l_x = l_x.split(labeled_minibatch_size)
+            r_ul_x, r_l_x = r_x.split(labeled_minibatch_size)
+
+            edge = 1
+            l_feature_loss = 0
+            for idx, value in enumerate(le_w):
+                l_feature_loss += feature_criterion(l_ul_x[idx], l_l_x[idx], edge, value.data[0] == 0)
+                
+            r_feature_loss = 0
+            for idx, value in enumerate(re_w):
+                r_feature_loss += feature_criterion(r_ul_x[idx], r_l_x[idx], edge, value.data[0] == 0)
+                
+
+            l_feature_loss = l_feature_loss * args.smooth_neighbor_scale * calculate_consistency_scale(epoch) / labeled_minibatch_size
+            r_feature_loss = r_feature_loss * args.smooth_neighbor_scale * calculate_consistency_scale(epoch) / labeled_minibatch_size
+            meters.update('l_feature_loss', l_feature_loss.data[0])
+            meters.update('r_feature_loss', r_feature_loss.data[0])
+        else:
+            l_feature_loss = 0
+            r_feature_loss = 0
+            meters.update('l_feature_loss', 0)
+            meters.update('r_feature_loss', 0)
 
         if args.logit_distance_cost >= 0:
             l_class_logit, l_cons_logit = l_logit1, l_logit2
@@ -369,6 +405,9 @@ def train_epoch(train_loader, l_model, r_model, le_model, re_model, l_optimizer,
 
         l_loss += l_res_loss
         r_loss += r_res_loss
+
+        l_loss += l_feature_loss
+        r_loss += r_feature_loss
 
         # update ema loss values
         if args.ema_model_judge:
@@ -488,6 +527,8 @@ def train_epoch(train_loader, l_model, r_model, le_model, re_model, l_optimizer,
                      'R-Res {meters[l_res_loss]:.4f}\t'
                      'R-Res {meters[r_res_loss]:.4f}\t'
                      'Cons {meters[cons_loss]:.4f}\t'
+                     'L-FEA {meters[l_feature_loss]:.4f}\t'
+                     'R-FEA {meters[r_feature_loss]:.4f}\t'
                      'Better-M {better.sum:.1f}\n'
                      'L-Prec@1 {meters[l_top1]:.3f}\t'
                      'R-Prec@1 {meters[r_top1]:.3f}\t'

@@ -47,6 +47,8 @@ def parameters():
         'ema_model_judge': False,
 
         'as_co_train_lr': True,
+
+        'smooth_neighbor_scale': 0.05,
     }
 
     # 4000 labels:

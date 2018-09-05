@@ -104,6 +104,8 @@ def create_parser():
     parser.add_argument('--ema-model-judge', default=False, type=str2bool, metavar='BOOL',
                         help='')
 
+    parser.add_argument('--smooth-neighbor-scale', default=None, type=float, metavar='WEIGHT')
+
     return parser
 
 
