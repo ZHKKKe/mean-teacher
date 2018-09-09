@@ -364,8 +364,8 @@ class CNN13(nn.Module):
             return self.fc.forward(x, validate=True)
             
         if debug:
-            return self.fc.forward(x, bs=bs, lbs=lbs), x
-        return self.fc.forward(x, bs=bs, lbs=lbs)
+            return self.fc.forward(x), x
+        return self.fc.forward(x)
 
 class CNN13_CONV(nn.Module):
     """
@@ -435,15 +435,11 @@ class CNN13_FC(nn.Module):
         '''this layer try to work as smooth neighbor'''
         self.fc_sn = nn.Linear(256, 1)
 
-    def forward(self, x, bs=0, lbs=0, validate=False):
+    def forward(self, x, validate=False):
         if validate:
             return self.fc1(x), self.fc2(x)
 
-        assert bs == lbs * 2
-        x_ = x.split(lbs)
-        x_sn = torch.cat((x_[0], x_[1]), dim=1)
-
-        return self.fc1(x), self.fc2(x), self.fc_sn(x_sn)
+        return self.fc1(x), self.fc2(x)
 
 
 class CNN13_M_FC(nn.Module):

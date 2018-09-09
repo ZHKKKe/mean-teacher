@@ -30,6 +30,140 @@ global_step = 0
 l_ema_loss = 0
 r_ema_loss = 0
 
+l_centers = {}
+r_centers = {}
+tmp_path = ''
+
+
+
+def pca_drawer(x, y, epoch, name):
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+
+    global tmp_path
+    global l_centers
+
+    color_map = {
+        -1: 'indianred',
+        0: 'orange',
+        1: 'khaki',
+        2: 'lightgreen',
+        3: 'paleturquoise',
+        4: 'dodgerblue',
+        5: 'lightsteelblue',
+        6: 'slategray',
+        7: 'mediumpurple',
+        8: 'hotpink',
+        9: 'silver',
+    }
+
+    plt.clf()
+
+    plt.title(name)
+    plt.grid(True)
+    plt.xlabel('x')
+    plt.ylabel('y')
+    plt.xticks(fontsize=7)
+    plt.yticks(fontsize=7)
+
+    center_num = len(l_centers.keys())
+
+    data_0 = x[..., 0]
+    data_1 = x[..., 1]
+
+    # plt.axis('tight')
+    x_side = 0.3 * (np.max(data_0) - np.min(data_0))
+    y_side = 0.3 * (np.max(data_1) - np.min(data_1))
+    plt.axis([
+        np.min(data_0) - x_side,
+        np.max(data_0) + x_side,
+        np.min(data_1) - y_side,
+        np.max(data_1) + y_side
+    ])
+
+    # split data
+    data = {}
+    center = {}
+    for i in range(-1, 10):
+        data[i] = [[], []]
+        center[i] = [[], []]
+
+    for idx, label in enumerate(y):
+        if len(y) - idx > center_num:
+            data[label][0].append(x[idx][0])
+            data[label][1].append(x[idx][1])
+        else:
+            center[label][0].append(x[idx][0])
+            center[label][1].append(x[idx][1])
+
+    for i in range(-1, 10):
+        plt.scatter(data[i][0], data[i][1], label=i, marker='.', s=3, c=color_map[i])
+    for i in range(-1, 10):
+        plt.scatter(center[i][0], center[i][1], label=i, marker='v', s=30, edgecolor='black', c=color_map[i])
+
+    plt.legend(loc='upper right')
+    filename = name + '_{}.jpg'.format(epoch)
+    file_path = os.path.join(tmp_path, filename)
+    plt.savefig(file_path, dpi=300)
+    plt.close('all')
+
+
+def calculate_initial_center(l_model, r_model, label_num, feature_dim, transformation, datadir, args):
+    global l_centers
+    global r_centers
+    
+    total_samples = 0
+
+    def create_loader(transformation, datadir, args):
+        traindir = os.path.join(datadir, args.train_subdir)
+        dataset = torchvision.datasets.ImageFolder(traindir, transformation)
+
+        if args.labels:
+            with open(args.labels) as f:
+                labels = dict(line.split(' ') for line in f.read().splitlines())
+            labeled_idxs, unlabeled_idxs = data.relabel_dataset(dataset, labels)
+
+        batch_sampler = data.LabeledBatchSampler(labeled_idxs, args.batch_size)
+        
+        loader = torch.utils.data.DataLoader(
+            dataset,
+            batch_sampler=batch_sampler,
+            num_workers=args.workers,
+            pin_memory=True)
+
+        return loader
+
+    for idx in range(0, label_num):
+        l_centers[idx] = torch.zeros(128).cuda()
+        r_centers[idx] = torch.zeros(128).cuda()
+
+    l_model.eval()
+    r_model.eval()
+
+    data_loader = create_loader(transformation, datadir, args)
+
+    end = time.time()
+    for i, ((l_input, r_input), target) in enumerate(data_loader):
+        l_input_var = torch.autograd.Variable(l_input, volatile=True)
+        r_input_var = torch.autograd.Variable(r_input, volatile=True)
+        target_var = torch.autograd.Variable(target.cuda(async=True), volatile=True)
+
+        minibatch_size = len(target_var)
+        total_samples += minibatch_size
+
+        (l_output1, l_output2), l_features = l_model(l_input_var, debug=True)
+        (r_output1, r_output2), r_features = r_model(r_input_var, debug=True)
+
+        for idx, label in enumerate(target_var):
+            label_int = label.data[0]
+            l_centers[label_int] += l_features[idx].data
+            r_centers[label_int] += r_features[idx].data
+
+    for idx, _ in enumerate(l_centers):
+        l_centers[idx] /= (total_samples / label_num)
+        r_centers[idx] /= (total_samples / label_num)
+    
 
 def update_ema_variables(model, ema_model, alpha, global_step):
     # Use the true average until the exponential average is more correct
@@ -140,13 +274,19 @@ def save_checkpoint(state, is_best, dirpath, epoch):
         shutil.copyfile(checkpoint_path, best_path)
         LOG.info("--- checkpoint copied to %s ---" % best_path)
 
-def validate(eval_loader, model, log, global_step, epoch):
+def validate(eval_loader, model, log, global_step, epoch, name):
+    global l_centers
+    global r_centers
+
     class_criterion = nn.CrossEntropyLoss(
         size_average=False, ignore_index=NO_LABEL).cuda()
     meters = AverageMeterSet()
 
     # switch to evaluate mode
     model.eval()
+
+    pca_features = []
+    pca_labeles = []
 
     end = time.time()
     for i, (input, target) in enumerate(eval_loader):
@@ -162,10 +302,18 @@ def validate(eval_loader, model, log, global_step, epoch):
         meters.update('labeled_minibatch_size', labeled_minibatch_size)
 
         # compute output
-        output1, output2 = model(input_var, validate=True)
+        (output1, output2), feature = model(input_var, debug=True)
         softmax1, softmax2 = F.softmax(
             output1, dim=1), F.softmax(
                 output2, dim=1)
+
+        if True and feature is not None:
+            f_data = feature.data.cpu().numpy()
+            t_data = target_var.data.cpu().numpy()
+            for idx, f in enumerate(f_data):
+                pca_features.append(f)
+                pca_labeles.append(t_data[idx])
+
         class_loss = class_criterion(output1, target_var) / minibatch_size
 
         # measure accuracy and record loss
@@ -199,6 +347,22 @@ def validate(eval_loader, model, log, global_step, epoch):
             **meters.sums()
         })
 
+    centers = l_centers if 'l' in name else r_centers
+
+    for key, value in centers.items():
+        pca_features.append(value.cpu().numpy())
+        pca_labeles.append(key)
+
+    if True:
+        LOG.info('--------------- PCA FEATURE DRAWER ---------------')
+        from sklearn.decomposition import PCA
+        pca_features = np.asarray(pca_features)
+        pca_labeles = np.asarray(pca_labeles)
+        pca = PCA(n_components=2)
+        pca_results = pca.fit_transform(pca_features)
+        pca_drawer(pca_results, pca_labeles, epoch=epoch, name=name)
+        LOG.info('--------------------------------------------------')
+    
     return meters['top1'].avg
 
 def calculate_train_ema_loss(train_loader, l_model, r_model):
@@ -259,6 +423,9 @@ def train_epoch(train_loader, l_model, r_model, le_model, re_model, l_optimizer,
     global l_ema_loss
     global r_ema_loss
 
+    global l_centers
+    global r_centers
+
     def sigmoid_rampup_ke(current, rampup_length, exp_scale):
         """Exponential rampup from https://arxiv.org/abs/1610.02242"""
         if rampup_length == 0:
@@ -313,6 +480,7 @@ def train_epoch(train_loader, l_model, r_model, le_model, re_model, l_optimizer,
         minibatch_size = len(target_var)
         labeled_minibatch_size = target_var.data.ne(NO_LABEL).sum()
         assert labeled_minibatch_size > 0
+        unlabeled_minibatch_size = minibatch_size - labeled_minibatch_size
         meters.update('labeled_minibatch_size', labeled_minibatch_size)
 
         l_model_out, l_x = l_model(l_input_var, debug=True, bs=minibatch_size, lbs=labeled_minibatch_size)
@@ -342,56 +510,127 @@ def train_epoch(train_loader, l_model, r_model, le_model, re_model, l_optimizer,
             le_logit1, le_logit2, le_sn_logit = le_model_out
             re_logit1, re_logit2, re_sn_logit = re_model_out
 
-        edge = 1
+
+        unlabeled_scale = 1.0
+        feature_loss_scale = 5.0
+        center_update_scale = 0.01
         l_feature_loss = 0
         r_feature_loss = 0
-        if args.smooth_neighbor_scale is not None:
+        if True:
+            _, le_prec_labels = torch.max(F.softmax(le_logit1, dim=1), 1)
+            _, re_prec_labels = torch.max(F.softmax(re_logit1, dim=1), 1)
 
-            # distance between labeled/unlabeled features
-            _, le_prec_labeles = torch.max(F.softmax(le_logit1, dim=1), 1)
-            _, re_prec_labeles = torch.max(F.softmax(re_logit1, dim=1), 1)
+            l_ulf_labels = le_prec_labels.split(unlabeled_minibatch_size)[0]
+            r_ulf_labels = re_prec_labels.split(unlabeled_minibatch_size)[0]
+            # lf_labels = target_var.split(unlabeled_minibatch_size)[1]
 
-            l_pairs_index = np.array([_ for _ in range(0, minibatch_size)])
-            r_pairs_index = np.array([_ for _ in range(0, minibatch_size)])
-            np.random.shuffle(l_pairs_index)
-            np.random.shuffle(r_pairs_index)
+            l_centers_var = {}
+            r_centers_var = {}
+            for idx, key in enumerate(l_centers.keys()):
+                l_centers_var[key] = torch.autograd.Variable(l_centers[key], requires_grad=False)
+                r_centers_var[key] = torch.autograd.Variable(r_centers[key], requires_grad=False)
 
-            # left model
-            for idx, v in enumerate(l_pairs_index):
-                if idx % 2 != 0:
+            for idx in range(0, unlabeled_minibatch_size):
+                l_feature_loss += unlabeled_scale * feature_criterion(l_x[idx], l_centers_var[l_ulf_labels[idx].data[0]])
+                r_feature_loss += unlabeled_scale * feature_criterion(r_x[idx], r_centers_var[r_ulf_labels[idx].data[0]])
+
+            for idx in range(unlabeled_minibatch_size, minibatch_size):
+                l_feature_loss += feature_criterion(l_x[idx], l_centers_var[target_var[idx].data[0]])
+                r_feature_loss += feature_criterion(r_x[idx], r_centers_var[target_var[idx].data[0]])
+
+            l_feature_loss = l_feature_loss * feature_loss_scale * calculate_consistency_scale(epoch) / minibatch_size / args.consistency
+            r_feature_loss = r_feature_loss * feature_loss_scale * calculate_consistency_scale(epoch) / minibatch_size / args.consistency
+            meters.update('l_feature_loss', l_feature_loss.data[0])
+            meters.update('r_feature_loss', r_feature_loss.data[0])
+
+            tmp_l_centers = {}
+            tmp_r_centers = {}
+            sample_nums = {}
+            for idx in range(0, 10):
+                tmp_l_centers[idx] = torch.zeros(128).cuda()
+                tmp_r_centers[idx] = torch.zeros(128).cuda()
+                sample_nums[idx] = 0
+
+            for idx in range(unlabeled_minibatch_size, minibatch_size):
+                label_int = target_var[idx].data[0]
+                tmp_l_centers[label_int] += l_x[idx].data
+                tmp_r_centers[label_int] += r_x[idx].data
+                sample_nums[label_int] += 1
+
+            for idx, key in enumerate(tmp_l_centers.keys()):
+                if sample_nums[key] == 0:
                     continue
+                l_centers[key] -= center_update_scale * (l_centers[key] - tmp_l_centers[key] / sample_nums[key])
+                r_centers[key] -= center_update_scale * (r_centers[key] - tmp_r_centers[key] / sample_nums[key])
+            
+            if i % args.print_freq == 0:
+                print(l_centers_var[0].data.cpu().numpy().tolist()[:5])
+        else:
+            meters.update('l_feature_loss', 0)
+            meters.update('r_feature_loss', 0)
+        # edge = 1
 
-                sample_idx1 = l_pairs_index[idx]
-                sample_idx2 = l_pairs_index[idx+1]
-                label1 = le_prec_labeles[sample_idx1]
-                label2 = le_prec_labeles[sample_idx2]
+        # l_feature_loss = 0
+        # r_feature_loss = 0
+        # if args.smooth_neighbor_scale is not None:
+            
+        #     _, le_prec_labeles = torch.max(F.softmax(le_logit1, dim=1), 1)
+        #     _, re_prec_labeles = torch.max(F.softmax(re_logit1, dim=1), 1)
 
-                feature1 = l_x[sample_idx1]
-                feature2 = l_x[sample_idx2]
+        #     l_pairs_index = np.array([_ for _ in range(0, minibatch_size)])
+        #     r_pairs_index = np.array([_ for _ in range(0, minibatch_size)])
+        #     np.random.shuffle(l_pairs_index)
+        #     np.random.shuffle(r_pairs_index)
 
-                # # print(sample_idx1, sample_idx2)
-                # # print(label1.data[0], label2.data[0])
+        #     # left model
+        #     for idx, v in enumerate(l_pairs_index):
+        #         if idx % 2 != 0:
+        #             continue
 
-                l_feature_loss += feature_criterion(feature1, feature2, edge, label1.data[0] == label2.data[0])
+        #         sample_idx1 = l_pairs_index[idx]
+        #         sample_idx2 = l_pairs_index[idx+1]
+        #         label1 = le_prec_labeles[sample_idx1]
+        #         label2 = le_prec_labeles[sample_idx2]
 
-            # right model
-            for idx, v in enumerate(r_pairs_index):
-                if idx % 2 != 0:
-                    continue
+        #         feature1 = l_x[sample_idx1]
+        #         feature2 = l_x[sample_idx2]
 
-                sample_idx1 = r_pairs_index[idx]
-                sample_idx2 = r_pairs_index[idx+1]
+        #         # # print(sample_idx1, sample_idx2)
+        #         # # print(label1.data[0], label2.data[0])
 
-                label1 = re_prec_labeles[sample_idx1]
-                label2 = re_prec_labeles[sample_idx2]
+        #         l_feature_loss += feature_criterion(feature1, feature2, edge, label1.data[0] == label2.data[0])
 
-                feature1 = r_x[sample_idx1]
-                feature2 = r_x[sample_idx2]
+        #     # right model
+        #     for idx, v in enumerate(r_pairs_index):
+        #         if idx % 2 != 0:
+        #             continue
 
-                r_feature_loss += feature_criterion(feature1, feature2, edge, label1.data[0] == label2.data[0])
+        #         sample_idx1 = r_pairs_index[idx]
+        #         sample_idx2 = r_pairs_index[idx+1]
+
+        #         label1 = re_prec_labeles[sample_idx1]
+        #         label2 = re_prec_labeles[sample_idx2]
+
+        #         feature1 = r_x[sample_idx1]
+        #         feature2 = r_x[sample_idx2]
+
+        #         r_feature_loss += feature_criterion(feature1, feature2, edge, label1.data[0] == label2.data[0])
 
         # ------------------------
             # if args.sn_fc_layer:
+            #     for idx, v in enumerate(l_pairs_index):
+            #         if idx % 2 == 0:
+            #             continue
+                    
+            #         sample_idx1 = l_pairs_index[idx]
+            #         sample_idx2 = l_pairs_index[idx+1]
+
+            #         label1 = le_prec_labeles[sample_idx1]
+            #         label2 = le_prec_labeles[sample_idx2]
+
+            #         feature1 = l_x[sample_idx1]
+            #         feature2 = l_x[sample_idx2]
+
                 # labels from teacher-network
                 # print('le_w_1:', le_w)
 
@@ -417,13 +656,13 @@ def train_epoch(train_loader, l_model, r_model, le_model, re_model, l_optimizer,
             #     r_feature_loss += feature_criterion(r_ul_x[idx], r_l_x[idx], edge, value.data[0] == 0)
         # ------------------------
 
-            l_feature_loss = l_feature_loss * args.smooth_neighbor_scale * calculate_consistency_scale(epoch) / labeled_minibatch_size
-            r_feature_loss = r_feature_loss * args.smooth_neighbor_scale * calculate_consistency_scale(epoch) / labeled_minibatch_size
-            meters.update('l_feature_loss', l_feature_loss.data[0])
-            meters.update('r_feature_loss', r_feature_loss.data[0])
-        else:
-            meters.update('l_feature_loss', 0)
-            meters.update('r_feature_loss', 0)
+        #     l_feature_loss = l_feature_loss * args.smooth_neighbor_scale * calculate_consistency_scale(epoch) / labeled_minibatch_size
+        #     r_feature_loss = r_feature_loss * args.smooth_neighbor_scale * calculate_consistency_scale(epoch) / labeled_minibatch_size
+        #     meters.update('l_feature_loss', l_feature_loss.data[0])
+        #     meters.update('r_feature_loss', r_feature_loss.data[0])
+        # else:
+        #     meters.update('l_feature_loss', 0)
+        #     meters.update('r_feature_loss', 0)
 
         if args.logit_distance_cost >= 0:
             l_class_logit, l_cons_logit = l_logit1, l_logit2
@@ -607,6 +846,9 @@ def main(context):
     global l_ema_loss
     global r_ema_loss
 
+    global tmp_path
+
+    tmp_path = context.tmp_dir
     checkpoint_path = context.transient_dir
     training_log = context.create_train_log('training')
     l_validation_log = context.create_train_log('l_validation')
@@ -656,14 +898,15 @@ def main(context):
 
     cudnn.benchmark = True
 
+    # l_ema_loss, r_ema_loss = calculate_train_ema_loss(train_loader, l_model, r_model)
+    calculate_initial_center(l_model, r_model, 10, 128, dataset_config['train_transformation'], dataset_config['datadir'], args=args)
+
     if args.evaluate:
         LOG.info('Evaluating the left model: ')
-        validate(eval_loader, l_model, l_validation_log, global_step, args.start_epoch)
+        validate(eval_loader, l_model, l_validation_log, global_step, args.start_epoch, name='el')
         LOG.info('Evaluating the right model: ')
-        validate(eval_loader, r_model, r_validation_log, global_step, args.start_epoch)
+        validate(eval_loader, r_model, r_validation_log, global_step, args.start_epoch, name='er')
         return
-
-    # l_ema_loss, r_ema_loss = calculate_train_ema_loss(train_loader, l_model, r_model)
 
     for epoch in range(args.start_epoch, args.epochs):
         start_time = time.time()
@@ -676,13 +919,13 @@ def main(context):
         if args.evaluation_epochs and (epoch + 1) % args.evaluation_epochs == 0:
             start_time = time.time()
             LOG.info('Evaluating the left model: ')
-            l_prec1 = validate(eval_loader, l_model, l_validation_log, global_step, epoch + 1)
+            l_prec1 = validate(eval_loader, l_model, l_validation_log, global_step, epoch + 1, name='l')
             LOG.info('Evaluating the right model: ')
-            r_prec1 = validate(eval_loader, r_model, r_validation_log, global_step, epoch + 1)
+            r_prec1 = validate(eval_loader, r_model, r_validation_log, global_step, epoch + 1, name='r')
             LOG.info('Evaluating the left ema model: ')
-            l_prec1 = validate(eval_loader, le_model, l_validation_log, global_step, epoch + 1)
+            l_prec1 = validate(eval_loader, le_model, l_validation_log, global_step, epoch + 1, name='el')
             LOG.info('Evaluating the right ema model: ')
-            r_prec1 = validate(eval_loader, re_model, r_validation_log, global_step, epoch + 1)
+            r_prec1 = validate(eval_loader, re_model, r_validation_log, global_step, epoch + 1, name='er')
             LOG.info('--- validation in {} seconds ---'.format(time.time() - start_time))
             better_prec1 = l_prec1 if l_prec1 > r_prec1 else r_prec1
             best_prec1 = max(better_prec1, best_prec1)

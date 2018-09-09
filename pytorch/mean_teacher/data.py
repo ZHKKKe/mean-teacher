@@ -132,6 +132,21 @@ class TwoStreamBatchSampler(Sampler):
         return len(self.primary_indices) // self.primary_batch_size
 
 
+class LabeledBatchSampler(Sampler):
+    def __init__(self, labeled_indices, batch_size):
+        self.labeled_indices = labeled_indices
+        self.batch_size = batch_size
+
+    def __iter__(self):
+        labeled_iter = iterate_once(self.labeled_indices)
+        return (
+            batch for batch in grouper(labeled_iter, self.batch_size)
+        )
+
+    def __len__(self):
+        return len(self.labeled_indices) // self.batch_size
+
+
 def iterate_once(iterable):
     return np.random.permutation(iterable)
 
