@@ -511,11 +511,15 @@ def train_epoch(train_loader, l_model, r_model, le_model, re_model, l_optimizer,
             re_logit1, re_logit2, re_sn_logit = re_model_out
 
 
+        edge = 1
         unlabeled_scale = 1.0
-        feature_loss_scale = 5.0
-        center_update_scale = 0.01
+        feature_loss_scale = 50.0
+        center_cluster_scale = 0.01
+        center_faraway_scale = 0.005
         l_feature_loss = 0
         r_feature_loss = 0
+        l_distance_loss = 0
+        r_distance_loss = 0
         if True:
             _, le_prec_labels = torch.max(F.softmax(le_logit1, dim=1), 1)
             _, re_prec_labels = torch.max(F.softmax(re_logit1, dim=1), 1)
@@ -547,27 +551,81 @@ def train_epoch(train_loader, l_model, r_model, le_model, re_model, l_optimizer,
             tmp_r_centers = {}
             sample_nums = {}
             for idx in range(0, 10):
-                tmp_l_centers[idx] = torch.zeros(128).cuda()
-                tmp_r_centers[idx] = torch.zeros(128).cuda()
+                # tmp_l_centers[idx] = torch.zeros(128).cuda()
+                # tmp_r_centers[idx] = torch.zeros(128).cuda()
+                tmp_l_centers[idx] = 0
+                tmp_r_centers[idx] = 0
                 sample_nums[idx] = 0
 
             for idx in range(unlabeled_minibatch_size, minibatch_size):
                 label_int = target_var[idx].data[0]
-                tmp_l_centers[label_int] += l_x[idx].data
-                tmp_r_centers[label_int] += r_x[idx].data
+                tmp_l_centers[label_int] += l_x[idx]
+                tmp_r_centers[label_int] += r_x[idx]
                 sample_nums[label_int] += 1
+
 
             for idx, key in enumerate(tmp_l_centers.keys()):
                 if sample_nums[key] == 0:
                     continue
-                l_centers[key] -= center_update_scale * (l_centers[key] - tmp_l_centers[key] / sample_nums[key])
-                r_centers[key] -= center_update_scale * (r_centers[key] - tmp_r_centers[key] / sample_nums[key])
+                tmp_l_centers[key].div_(sample_nums[key])                
+                tmp_r_centers[key].div_(sample_nums[key])
             
-            if i % args.print_freq == 0:
-                print(l_centers_var[0].data.cpu().numpy().tolist()[:5])
+            keys = list(l_centers.keys())
+            for idx, key in enumerate(keys):
+                if sample_nums[keys[idx]] == 0:
+                    continue
+                for jdx in range(idx+1, len(keys)):
+                    if sample_nums[keys[jdx]] == 0:
+                        continue
+    
+                    l_distance = torch.abs(feature_criterion(tmp_l_centers[keys[idx]], tmp_l_centers[keys[jdx]]))
+                    r_distance = torch.abs(feature_criterion(tmp_r_centers[keys[idx]], tmp_r_centers[keys[jdx]]))
+                    l_value = l_distance.mul_(-1).add_(edge)
+                    r_value = r_distance.mul_(-1).add_(edge)
+                    
+                    if i % args.print_freq == 0:
+                        LOG.info('{0}, {1} distance: {2}'.format(keys[idx], keys[jdx], l_distance.data[0]))
+
+                    if l_value.data[0] < 0:
+                        l_value.mul_(0.0)
+                    if r_value.data[0] < 0:
+                        r_value.mul_(0.0)
+                    
+                    l_distance_loss += l_value
+                    r_distance_loss += r_value
+            
+            l_distance_loss = l_distance_loss  * calculate_consistency_scale(epoch) / 10 / 10 / args.consistency
+            r_distance_loss = r_distance_loss  * calculate_consistency_scale(epoch) / 10 / 10 / args.consistency
+            meters.update('l_distance_loss', l_distance_loss.data[0])
+            meters.update('r_distance_loss', r_distance_loss.data[0])
+
+            for idx, key in enumerate(tmp_l_centers.keys()):
+                if sample_nums[key] == 0:
+                    continue
+                l_centers[key] -= center_cluster_scale * (l_centers[key] - tmp_l_centers[key].data)
+                r_centers[key] -= center_cluster_scale * (r_centers[key] - tmp_r_centers[key].data)
+            
+
+            l_cluster_loss = l_feature_loss + l_distance_loss
+            r_cluster_loss = r_feature_loss + r_distance_loss
+            # l_cluster_loss = l_feature_loss
+            # r_cluster_loss = r_feature_loss
+
+            # keys = l_centers.keys()
+            # for idx, key in enumerate(keys):
+            #     for jdx in range(idx+1, len(keys)):
+            #         distance = feature_criterion(l_centers[keys[idx]], l_centers[keys[jdx]])
+            #         if distance < edge:
+            #             l_centers[keys[idx]]
+
+
+            # if i % args.print_freq == 0:
+                # print(l_centers_var[0].data.cpu().numpy().tolist()[:5])
         else:
             meters.update('l_feature_loss', 0)
             meters.update('r_feature_loss', 0)
+            meters.update('l_distance_loss', 0)
+            meters.update('r_distance_loss', 0)
         # edge = 1
 
         # l_feature_loss = 0
@@ -702,8 +760,8 @@ def train_epoch(train_loader, l_model, r_model, le_model, re_model, l_optimizer,
         l_loss += l_res_loss
         r_loss += r_res_loss
 
-        l_loss += l_feature_loss
-        r_loss += r_feature_loss
+        # l_loss += l_feature_loss
+        # r_loss += r_feature_loss
 
         # update ema loss values
         if args.ema_model_judge:
@@ -796,10 +854,12 @@ def train_epoch(train_loader, l_model, r_model, le_model, re_model, l_optimizer,
         meters.update('re_error5', 100. - re_prec5[0], labeled_minibatch_size)
 
         l_optimizer.zero_grad()
+        l_cluster_loss.backward(retain_graph=True)
         l_loss.backward()
         l_optimizer.step()
 
         r_optimizer.zero_grad()
+        r_cluster_loss.backward(retain_graph=True)
         r_loss.backward()
         r_optimizer.step()
 
@@ -825,6 +885,8 @@ def train_epoch(train_loader, l_model, r_model, le_model, re_model, l_optimizer,
                      'Cons {meters[cons_loss]:.4f}\t'
                      'L-FEA {meters[l_feature_loss]:.4f}\t'
                      'R-FEA {meters[r_feature_loss]:.4f}\t'
+                     'L-DIS {meters[l_distance_loss]:.4f}\t'
+                     'R-DIS {meters[r_distance_loss]:.4f}\t'
                      'Better-M {better.sum:.1f}\n'
                      'L-Prec@1 {meters[l_top1]:.3f}\t'
                      'R-Prec@1 {meters[r_top1]:.3f}\t'
