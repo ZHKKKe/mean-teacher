@@ -356,10 +356,12 @@ def validate(eval_loader, model, log, global_step, epoch, name):
     if True:
         LOG.info('--------------- PCA FEATURE DRAWER ---------------')
         from sklearn.decomposition import PCA
+        from sklearn.preprocessing import normalize
+
         pca_features = np.asarray(pca_features)
         pca_labeles = np.asarray(pca_labeles)
         pca = PCA(n_components=2)
-        pca_results = pca.fit_transform(pca_features)
+        pca_results = pca.fit_transform(normalize(pca_features))
         pca_drawer(pca_results, pca_labeles, epoch=epoch, name=name)
         LOG.info('--------------------------------------------------')
     
@@ -449,7 +451,6 @@ def train_epoch(train_loader, l_model, r_model, le_model, re_model, l_optimizer,
     residual_logit_criterion = losses.symmetric_mse_loss
     feature_criterion = losses.feature_mse_loss
     
-    sn_criterion = losses.softmax_mse_loss
 
 
     meters = AverageMeterSet()
@@ -510,217 +511,185 @@ def train_epoch(train_loader, l_model, r_model, le_model, re_model, l_optimizer,
             le_logit1, le_logit2, le_sn_logit = le_model_out
             re_logit1, re_logit2, re_sn_logit = re_model_out
 
-
-        edge = 1
-        unlabeled_scale = 1.0
-        feature_loss_scale = 50.0
-        center_cluster_scale = 0.01
-        center_faraway_scale = 0.005
-        l_feature_loss = 0
-        r_feature_loss = 0
-        l_distance_loss = 0
-        r_distance_loss = 0
-        if True:
-            _, le_prec_labels = torch.max(F.softmax(le_logit1, dim=1), 1)
-            _, re_prec_labels = torch.max(F.softmax(re_logit1, dim=1), 1)
-
-            l_ulf_labels = le_prec_labels.split(unlabeled_minibatch_size)[0]
-            r_ulf_labels = re_prec_labels.split(unlabeled_minibatch_size)[0]
-            # lf_labels = target_var.split(unlabeled_minibatch_size)[1]
-
-            l_centers_var = {}
-            r_centers_var = {}
-            for idx, key in enumerate(l_centers.keys()):
-                l_centers_var[key] = torch.autograd.Variable(l_centers[key], requires_grad=False)
-                r_centers_var[key] = torch.autograd.Variable(r_centers[key], requires_grad=False)
-
-            for idx in range(0, unlabeled_minibatch_size):
-                l_feature_loss += unlabeled_scale * feature_criterion(l_x[idx], l_centers_var[l_ulf_labels[idx].data[0]])
-                r_feature_loss += unlabeled_scale * feature_criterion(r_x[idx], r_centers_var[r_ulf_labels[idx].data[0]])
-
-            for idx in range(unlabeled_minibatch_size, minibatch_size):
-                l_feature_loss += feature_criterion(l_x[idx], l_centers_var[target_var[idx].data[0]])
-                r_feature_loss += feature_criterion(r_x[idx], r_centers_var[target_var[idx].data[0]])
-
-            l_feature_loss = l_feature_loss * feature_loss_scale * calculate_consistency_scale(epoch) / minibatch_size / args.consistency
-            r_feature_loss = r_feature_loss * feature_loss_scale * calculate_consistency_scale(epoch) / minibatch_size / args.consistency
-            meters.update('l_feature_loss', l_feature_loss.data[0])
-            meters.update('r_feature_loss', r_feature_loss.data[0])
-
-            tmp_l_centers = {}
-            tmp_r_centers = {}
-            sample_nums = {}
-            for idx in range(0, 10):
-                # tmp_l_centers[idx] = torch.zeros(128).cuda()
-                # tmp_r_centers[idx] = torch.zeros(128).cuda()
-                tmp_l_centers[idx] = 0
-                tmp_r_centers[idx] = 0
-                sample_nums[idx] = 0
-
-            for idx in range(unlabeled_minibatch_size, minibatch_size):
-                label_int = target_var[idx].data[0]
-                tmp_l_centers[label_int] += l_x[idx]
-                tmp_r_centers[label_int] += r_x[idx]
-                sample_nums[label_int] += 1
-
-
-            for idx, key in enumerate(tmp_l_centers.keys()):
-                if sample_nums[key] == 0:
-                    continue
-                tmp_l_centers[key].div_(sample_nums[key])                
-                tmp_r_centers[key].div_(sample_nums[key])
-            
-            keys = list(l_centers.keys())
-            for idx, key in enumerate(keys):
-                if sample_nums[keys[idx]] == 0:
-                    continue
-                for jdx in range(idx+1, len(keys)):
-                    if sample_nums[keys[jdx]] == 0:
-                        continue
-    
-                    l_distance = torch.abs(feature_criterion(tmp_l_centers[keys[idx]], tmp_l_centers[keys[jdx]]))
-                    r_distance = torch.abs(feature_criterion(tmp_r_centers[keys[idx]], tmp_r_centers[keys[jdx]]))
-                    l_value = l_distance.mul_(-1).add_(edge)
-                    r_value = r_distance.mul_(-1).add_(edge)
-                    
-                    if i % args.print_freq == 0:
-                        LOG.info('{0}, {1} distance: {2}'.format(keys[idx], keys[jdx], l_distance.data[0]))
-
-                    if l_value.data[0] < 0:
-                        l_value.mul_(0.0)
-                    if r_value.data[0] < 0:
-                        r_value.mul_(0.0)
-                    
-                    l_distance_loss += l_value
-                    r_distance_loss += r_value
-            
-            l_distance_loss = l_distance_loss  * calculate_consistency_scale(epoch) / 10 / 10 / args.consistency
-            r_distance_loss = r_distance_loss  * calculate_consistency_scale(epoch) / 10 / 10 / args.consistency
-            meters.update('l_distance_loss', l_distance_loss.data[0])
-            meters.update('r_distance_loss', r_distance_loss.data[0])
-
-            for idx, key in enumerate(tmp_l_centers.keys()):
-                if sample_nums[key] == 0:
-                    continue
-                l_centers[key] -= center_cluster_scale * (l_centers[key] - tmp_l_centers[key].data)
-                r_centers[key] -= center_cluster_scale * (r_centers[key] - tmp_r_centers[key].data)
-            
-
-            l_cluster_loss = l_feature_loss + l_distance_loss
-            r_cluster_loss = r_feature_loss + r_distance_loss
-            # l_cluster_loss = l_feature_loss
-            # r_cluster_loss = r_feature_loss
-
-            # keys = l_centers.keys()
-            # for idx, key in enumerate(keys):
-            #     for jdx in range(idx+1, len(keys)):
-            #         distance = feature_criterion(l_centers[keys[idx]], l_centers[keys[jdx]])
-            #         if distance < edge:
-            #             l_centers[keys[idx]]
-
-
-            # if i % args.print_freq == 0:
-                # print(l_centers_var[0].data.cpu().numpy().tolist()[:5])
-        else:
-            meters.update('l_feature_loss', 0)
-            meters.update('r_feature_loss', 0)
-            meters.update('l_distance_loss', 0)
-            meters.update('r_distance_loss', 0)
+# ----- cluster center 
         # edge = 1
-
+        # unlabeled_scale = 1.0
+        # feature_loss_scale = 50.0
+        # center_cluster_scale = 0.01
+        # center_faraway_scale = 0.005
         # l_feature_loss = 0
         # r_feature_loss = 0
-        # if args.smooth_neighbor_scale is not None:
-            
-        #     _, le_prec_labeles = torch.max(F.softmax(le_logit1, dim=1), 1)
-        #     _, re_prec_labeles = torch.max(F.softmax(re_logit1, dim=1), 1)
+        # l_distance_loss = 0
+        # r_distance_loss = 0
+        # if True:
+        #     _, le_prec_labels = torch.max(F.softmax(le_logit1, dim=1), 1)
+        #     _, re_prec_labels = torch.max(F.softmax(re_logit1, dim=1), 1)
 
-        #     l_pairs_index = np.array([_ for _ in range(0, minibatch_size)])
-        #     r_pairs_index = np.array([_ for _ in range(0, minibatch_size)])
-        #     np.random.shuffle(l_pairs_index)
-        #     np.random.shuffle(r_pairs_index)
+        #     l_ulf_labels = le_prec_labels.split(unlabeled_minibatch_size)[0]
+        #     r_ulf_labels = re_prec_labels.split(unlabeled_minibatch_size)[0]
+        #     # lf_labels = target_var.split(unlabeled_minibatch_size)[1]
 
-        #     # left model
-        #     for idx, v in enumerate(l_pairs_index):
-        #         if idx % 2 != 0:
-        #             continue
+        #     l_centers_var = {}
+        #     r_centers_var = {}
+        #     for idx, key in enumerate(l_centers.keys()):
+        #         l_centers_var[key] = torch.autograd.Variable(l_centers[key], requires_grad=False)
+        #         r_centers_var[key] = torch.autograd.Variable(r_centers[key], requires_grad=False)
 
-        #         sample_idx1 = l_pairs_index[idx]
-        #         sample_idx2 = l_pairs_index[idx+1]
-        #         label1 = le_prec_labeles[sample_idx1]
-        #         label2 = le_prec_labeles[sample_idx2]
+        #     for idx in range(0, unlabeled_minibatch_size):
+        #         l_feature_loss += unlabeled_scale * feature_criterion(l_x[idx], l_centers_var[l_ulf_labels[idx].data[0]])
+        #         r_feature_loss += unlabeled_scale * feature_criterion(r_x[idx], r_centers_var[r_ulf_labels[idx].data[0]])
 
-        #         feature1 = l_x[sample_idx1]
-        #         feature2 = l_x[sample_idx2]
+        #     for idx in range(unlabeled_minibatch_size, minibatch_size):
+        #         l_feature_loss += feature_criterion(l_x[idx], l_centers_var[target_var[idx].data[0]])
+        #         r_feature_loss += feature_criterion(r_x[idx], r_centers_var[target_var[idx].data[0]])
 
-        #         # # print(sample_idx1, sample_idx2)
-        #         # # print(label1.data[0], label2.data[0])
-
-        #         l_feature_loss += feature_criterion(feature1, feature2, edge, label1.data[0] == label2.data[0])
-
-        #     # right model
-        #     for idx, v in enumerate(r_pairs_index):
-        #         if idx % 2 != 0:
-        #             continue
-
-        #         sample_idx1 = r_pairs_index[idx]
-        #         sample_idx2 = r_pairs_index[idx+1]
-
-        #         label1 = re_prec_labeles[sample_idx1]
-        #         label2 = re_prec_labeles[sample_idx2]
-
-        #         feature1 = r_x[sample_idx1]
-        #         feature2 = r_x[sample_idx2]
-
-        #         r_feature_loss += feature_criterion(feature1, feature2, edge, label1.data[0] == label2.data[0])
-
-        # ------------------------
-            # if args.sn_fc_layer:
-            #     for idx, v in enumerate(l_pairs_index):
-            #         if idx % 2 == 0:
-            #             continue
-                    
-            #         sample_idx1 = l_pairs_index[idx]
-            #         sample_idx2 = l_pairs_index[idx+1]
-
-            #         label1 = le_prec_labeles[sample_idx1]
-            #         label2 = le_prec_labeles[sample_idx2]
-
-            #         feature1 = l_x[sample_idx1]
-            #         feature2 = l_x[sample_idx2]
-
-                # labels from teacher-network
-                # print('le_w_1:', le_w)
-
-                # le_w[le_w != 0] = 1
-                # re_w[re_w != 0] = 1 # [minibatch_size/2]
-
-                # print('le_w_2:', le_w)
-                # print('l_sn_logit: ', l_sn_logit)
-                # l_feature_loss = sn_criterion(l_sn_logit, le_w)
-                # print('l_f_loss: ', l_feature_loss)
-                
-
-            # l_ul_x, l_l_x = l_x.split(labeled_minibatch_size)
-            # r_ul_x, r_l_x = r_x.split(labeled_minibatch_size)
-
-            # edge = 1
-            # l_feature_loss = 0
-            # for idx, value in enumerate(le_w):
-            #     l_feature_loss += feature_criterion(l_ul_x[idx], l_l_x[idx], edge, value.data[0] == 0)
-                
-            # r_feature_loss = 0
-            # for idx, value in enumerate(re_w):
-            #     r_feature_loss += feature_criterion(r_ul_x[idx], r_l_x[idx], edge, value.data[0] == 0)
-        # ------------------------
-
-        #     l_feature_loss = l_feature_loss * args.smooth_neighbor_scale * calculate_consistency_scale(epoch) / labeled_minibatch_size
-        #     r_feature_loss = r_feature_loss * args.smooth_neighbor_scale * calculate_consistency_scale(epoch) / labeled_minibatch_size
+        #     l_feature_loss = l_feature_loss * feature_loss_scale * calculate_consistency_scale(epoch) / minibatch_size / args.consistency
+        #     r_feature_loss = r_feature_loss * feature_loss_scale * calculate_consistency_scale(epoch) / minibatch_size / args.consistency
         #     meters.update('l_feature_loss', l_feature_loss.data[0])
         #     meters.update('r_feature_loss', r_feature_loss.data[0])
+
+        #     tmp_l_centers = {}
+        #     tmp_r_centers = {}
+        #     sample_nums = {}
+        #     for idx in range(0, 10):
+        #         # tmp_l_centers[idx] = torch.zeros(128).cuda()
+        #         # tmp_r_centers[idx] = torch.zeros(128).cuda()
+        #         tmp_l_centers[idx] = 0
+        #         tmp_r_centers[idx] = 0
+        #         sample_nums[idx] = 0
+
+        #     for idx in range(unlabeled_minibatch_size, minibatch_size):
+        #         label_int = target_var[idx].data[0]
+        #         tmp_l_centers[label_int] += l_x[idx]
+        #         tmp_r_centers[label_int] += r_x[idx]
+        #         sample_nums[label_int] += 1
+
+
+        #     for idx, key in enumerate(tmp_l_centers.keys()):
+        #         if sample_nums[key] == 0:
+        #             continue
+        #         tmp_l_centers[key].div_(sample_nums[key])                
+        #         tmp_r_centers[key].div_(sample_nums[key])
+            
+        #     keys = list(l_centers.keys())
+        #     for idx, key in enumerate(keys):
+        #         if sample_nums[keys[idx]] == 0:
+        #             continue
+        #         for jdx in range(idx+1, len(keys)):
+        #             if sample_nums[keys[jdx]] == 0:
+        #                 continue
+    
+        #             l_distance = torch.abs(feature_criterion(tmp_l_centers[keys[idx]], tmp_l_centers[keys[jdx]]))
+        #             r_distance = torch.abs(feature_criterion(tmp_r_centers[keys[idx]], tmp_r_centers[keys[jdx]]))
+        #             l_value = l_distance.mul_(-1).add_(edge)
+        #             r_value = r_distance.mul_(-1).add_(edge)
+                    
+        #             if i % args.print_freq == 0:
+        #                 LOG.info('{0}, {1} distance: {2}'.format(keys[idx], keys[jdx], l_distance.data[0]))
+
+        #             if l_value.data[0] < 0:
+        #                 l_value.mul_(0.0)
+        #             if r_value.data[0] < 0:
+        #                 r_value.mul_(0.0)
+                    
+        #             l_distance_loss += l_value
+        #             r_distance_loss += r_value
+            
+        #     l_distance_loss = l_distance_loss  * calculate_consistency_scale(epoch) / 10 / 10 / args.consistency
+        #     r_distance_loss = r_distance_loss  * calculate_consistency_scale(epoch) / 10 / 10 / args.consistency
+        #     meters.update('l_distance_loss', l_distance_loss.data[0])
+        #     meters.update('r_distance_loss', r_distance_loss.data[0])
+
+        #     for idx, key in enumerate(tmp_l_centers.keys()):
+        #         if sample_nums[key] == 0:
+        #             continue
+        #         l_centers[key] -= center_cluster_scale * (l_centers[key] - tmp_l_centers[key].data)
+        #         r_centers[key] -= center_cluster_scale * (r_centers[key] - tmp_r_centers[key].data)
+            
+
+        #     l_cluster_loss = l_feature_loss + l_distance_loss
+        #     r_cluster_loss = r_feature_loss + r_distance_loss
+        #     # l_cluster_loss = l_feature_loss
+        #     # r_cluster_loss = r_feature_loss
+
+        #     # keys = l_centers.keys()
+        #     # for idx, key in enumerate(keys):
+        #     #     for jdx in range(idx+1, len(keys)):
+        #     #         distance = feature_criterion(l_centers[keys[idx]], l_centers[keys[jdx]])
+        #     #         if distance < edge:
+        #     #             l_centers[keys[idx]]
+
+
+        #     # if i % args.print_freq == 0:
+        #         # print(l_centers_var[0].data.cpu().numpy().tolist()[:5])
         # else:
         #     meters.update('l_feature_loss', 0)
         #     meters.update('r_feature_loss', 0)
+        #     meters.update('l_distance_loss', 0)
+        #     meters.update('r_distance_loss', 0)
+
+# ----------------------------------------------------
+
+        edge = 1
+        l_feature_loss = 0
+        r_feature_loss = 0
+        same_l = 0
+        same_r = 0
+        if args.smooth_neighbor_scale is not None:
+            _, le_prec_labeles = torch.max(F.softmax(le_logit1, dim=1), 1)
+            _, re_prec_labeles = torch.max(F.softmax(re_logit1, dim=1), 1)
+
+            l_pairs_index = np.array([_ for _ in range(0, minibatch_size)])
+            # r_pairs_index = np.array([_ for _ in range(0, minibatch_size)])
+            np.random.shuffle(l_pairs_index)
+            # np.random.shuffle(r_pairs_index)
+    
+            # left model
+            for idx, v in enumerate(l_pairs_index):
+                if idx % 2 != 0:
+                    continue
+
+                sample_idx1 = l_pairs_index[idx]
+                sample_idx2 = l_pairs_index[idx+1]
+
+                label1 = le_prec_labeles[sample_idx1]
+                label2 = le_prec_labeles[sample_idx2]
+                feature1 = l_x[sample_idx1]
+                feature2 = l_x[sample_idx2]
+
+                l_feature_loss += feature_criterion(feature1, feature2, edge, label1.data[0] == label2.data[0])
+                if label1.data[0] == label2.data[0]:
+                    same_l += 1
+
+            # right model
+            for idx, v in enumerate(l_pairs_index):
+                if idx % 2 != 0:
+                    continue
+
+                sample_idx1 = l_pairs_index[idx]
+                sample_idx2 = l_pairs_index[idx+1]
+
+                label1 = re_prec_labeles[sample_idx1]
+                label2 = re_prec_labeles[sample_idx2]
+                feature1 = r_x[sample_idx1]
+                feature2 = r_x[sample_idx2]
+
+                r_feature_loss += feature_criterion(feature1, feature2, edge, label1.data[0] == label2.data[0])
+
+                if label1.data[0] == label2.data[0]:
+                    same_r += 1
+
+            if i % args.print_freq == 0:
+                print('same_l: {0}   same_r:{1}'.format(same_l, same_r))
+
+            l_feature_loss = l_feature_loss * args.smooth_neighbor_scale * calculate_consistency_scale(epoch) / labeled_minibatch_size
+            r_feature_loss = r_feature_loss * args.smooth_neighbor_scale * calculate_consistency_scale(epoch) / labeled_minibatch_size
+            meters.update('l_feature_loss', l_feature_loss.data[0])
+            meters.update('r_feature_loss', r_feature_loss.data[0])
+        else:
+            meters.update('l_feature_loss', 0)
+            meters.update('r_feature_loss', 0)
+
 
         if args.logit_distance_cost >= 0:
             l_class_logit, l_cons_logit = l_logit1, l_logit2
@@ -760,8 +729,8 @@ def train_epoch(train_loader, l_model, r_model, le_model, re_model, l_optimizer,
         l_loss += l_res_loss
         r_loss += r_res_loss
 
-        # l_loss += l_feature_loss
-        # r_loss += r_feature_loss
+        l_loss += l_feature_loss
+        r_loss += r_feature_loss
 
         # update ema loss values
         if args.ema_model_judge:
@@ -854,12 +823,12 @@ def train_epoch(train_loader, l_model, r_model, le_model, re_model, l_optimizer,
         meters.update('re_error5', 100. - re_prec5[0], labeled_minibatch_size)
 
         l_optimizer.zero_grad()
-        l_cluster_loss.backward(retain_graph=True)
+        # l_cluster_loss.backward(retain_graph=True)
         l_loss.backward()
         l_optimizer.step()
 
         r_optimizer.zero_grad()
-        r_cluster_loss.backward(retain_graph=True)
+        # r_cluster_loss.backward(retain_graph=True)
         r_loss.backward()
         r_optimizer.step()
 
@@ -885,8 +854,8 @@ def train_epoch(train_loader, l_model, r_model, le_model, re_model, l_optimizer,
                      'Cons {meters[cons_loss]:.4f}\t'
                      'L-FEA {meters[l_feature_loss]:.4f}\t'
                      'R-FEA {meters[r_feature_loss]:.4f}\t'
-                     'L-DIS {meters[l_distance_loss]:.4f}\t'
-                     'R-DIS {meters[r_distance_loss]:.4f}\t'
+                    #  'L-DIS {meters[l_distance_loss]:.4f}\t'
+                    #  'R-DIS {meters[r_distance_loss]:.4f}\t'
                      'Better-M {better.sum:.1f}\n'
                      'L-Prec@1 {meters[l_top1]:.3f}\t'
                      'R-Prec@1 {meters[r_top1]:.3f}\t'

@@ -7,6 +7,7 @@ import main_four_models
 from mean_teacher.cli import parse_dict_args
 from mean_teacher.run_context import RunContext
 
+
 LOG = logging.getLogger('runner')
 
 def parameters():
@@ -47,6 +48,9 @@ def parameters():
         'ema_model_judge': False,
 
         'as_co_train_lr': True,
+
+        'smooth_neighbor_scale': 0.01,
+
     }
 
     # 4000 labels:
