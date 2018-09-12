@@ -636,51 +636,44 @@ def train_epoch(train_loader, l_model, r_model, le_model, re_model, l_optimizer,
         same_l = 0
         same_r = 0
         if args.smooth_neighbor_scale is not None:
-            _, le_prec_labeles = torch.max(F.softmax(le_logit1, dim=1), 1)
-            _, re_prec_labeles = torch.max(F.softmax(re_logit1, dim=1), 1)
+            _, le_prec_labels = torch.max(F.softmax(le_logit1, dim=1), 1)
+            _, re_prec_labels = torch.max(F.softmax(re_logit1, dim=1), 1)
+            # print(list(le_prec_labels.data.cpu().numpy()))
+            # print(list(target_labels.data.cpu().numpy()))
 
-            l_pairs_index = np.array([_ for _ in range(0, minibatch_size)])
+            l_mix_labels = torch.cat((le_prec_labels[:unlabeled_minibatch_size], target_var[unlabeled_minibatch_size:]))
+            r_mix_labels = torch.cat((re_prec_labels[:unlabeled_minibatch_size], target_var[unlabeled_minibatch_size:]))
+            # print(list(l_mix_labels.data.cpu().numpy()))
+
+            # l_pairs_index = np.array([_ for _ in range(0, minibatch_size)])
             # r_pairs_index = np.array([_ for _ in range(0, minibatch_size)])
-            np.random.shuffle(l_pairs_index)
+            # np.random.shuffle(l_pairs_index)
             # np.random.shuffle(r_pairs_index)
     
             # left model
-            for idx, v in enumerate(l_pairs_index):
-                if idx % 2 != 0:
-                    continue
-
-                sample_idx1 = l_pairs_index[idx]
-                sample_idx2 = l_pairs_index[idx+1]
-
-                label1 = le_prec_labeles[sample_idx1]
-                label2 = le_prec_labeles[sample_idx2]
-                feature1 = l_x[sample_idx1]
-                feature2 = l_x[sample_idx2]
+            for idx in range(0, unlabeled_minibatch_size):
+                label1 = l_mix_labels[idx]
+                label2 = l_mix_labels[idx + unlabeled_minibatch_size]
+                feature1 = l_x[idx]
+                feature2 = l_x[idx + unlabeled_minibatch_size]
 
                 l_feature_loss += feature_criterion(feature1, feature2, edge, label1.data[0] == label2.data[0])
                 if label1.data[0] == label2.data[0]:
                     same_l += 1
 
             # right model
-            for idx, v in enumerate(l_pairs_index):
-                if idx % 2 != 0:
-                    continue
-
-                sample_idx1 = l_pairs_index[idx]
-                sample_idx2 = l_pairs_index[idx+1]
-
-                label1 = re_prec_labeles[sample_idx1]
-                label2 = re_prec_labeles[sample_idx2]
-                feature1 = r_x[sample_idx1]
-                feature2 = r_x[sample_idx2]
+            for idx in range(0, unlabeled_minibatch_size):
+                label1 = r_mix_labels[idx]
+                label2 = r_mix_labels[idx + unlabeled_minibatch_size]
+                feature1 = r_x[idx]
+                feature2 = r_x[idx + unlabeled_minibatch_size]
 
                 r_feature_loss += feature_criterion(feature1, feature2, edge, label1.data[0] == label2.data[0])
-
                 if label1.data[0] == label2.data[0]:
                     same_r += 1
 
-            if i % args.print_freq == 0:
-                print('same_l: {0}   same_r:{1}'.format(same_l, same_r))
+            # if i % args.print_freq == 0:
+                # print('same_l: {0}   same_r:{1}'.format(same_l, same_r))
 
             l_feature_loss = l_feature_loss * args.smooth_neighbor_scale * calculate_consistency_scale(epoch) / labeled_minibatch_size
             r_feature_loss = r_feature_loss * args.smooth_neighbor_scale * calculate_consistency_scale(epoch) / labeled_minibatch_size

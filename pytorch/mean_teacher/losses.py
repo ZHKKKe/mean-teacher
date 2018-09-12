@@ -20,9 +20,11 @@ def feature_mse_loss(inputs, targets, edge, same_sample=False):
     if same_sample:
         return distance
     else:
-        value = distance.mul_(-1).add_(edge)
-        # if value.data[0] < 0:
-        value.mul_(0.0)
+        sqrt_distance = torch.sqrt(distance)
+        value = sqrt_distance.mul_(-1).add_(edge)
+        if value.data[0] < 0:
+            value.mul_(0.0)
+        value = torch.pow(value, 2)
         return value
 
 

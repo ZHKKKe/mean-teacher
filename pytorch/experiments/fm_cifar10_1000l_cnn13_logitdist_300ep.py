@@ -48,7 +48,7 @@ def parameters():
 
         'as_co_train_lr': True,
 
-        # 'smooth_neighbor_scale': 0.01,
+        'smooth_neighbor_scale': 0.4,
     }
 
     # 4000 labels:
