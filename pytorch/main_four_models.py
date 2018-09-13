@@ -99,8 +99,8 @@ def pca_drawer(x, y, epoch, name):
 
     for i in range(-1, 10):
         plt.scatter(data[i][0], data[i][1], label=i, marker='.', s=3, c=color_map[i])
-    for i in range(-1, 10):
-        plt.scatter(center[i][0], center[i][1], label=i, marker='v', s=30, edgecolor='black', c=color_map[i])
+    # for i in range(-1, 10):
+        # plt.scatter(center[i][0], center[i][1], label=i, marker='v', s=30, edgecolor='black', c=color_map[i])
 
     plt.legend(loc='upper right')
     filename = name + '_{}.jpg'.format(epoch)
@@ -349,19 +349,20 @@ def validate(eval_loader, model, log, global_step, epoch, name):
 
     centers = l_centers if 'l' in name else r_centers
 
-    for key, value in centers.items():
-        pca_features.append(value.cpu().numpy())
-        pca_labeles.append(key)
+    # for key, value in centers.items():
+        # pca_features.append(value.cpu().numpy())
+        # pca_labeles.append(key)
 
     if True:
         LOG.info('--------------- PCA FEATURE DRAWER ---------------')
         from sklearn.decomposition import PCA
-        from sklearn.preprocessing import normalize
+        from sklearn.preprocessing import normalize, scale
 
         pca_features = np.asarray(pca_features)
         pca_labeles = np.asarray(pca_labeles)
         pca = PCA(n_components=2)
-        pca_results = pca.fit_transform(normalize(pca_features))
+        pca_results = pca.fit_transform(normalize(pca_features, axis=0))
+        # pca_results = pca.fit_transform(scale(pca_features, axis=0))
         pca_drawer(pca_results, pca_labeles, epoch=epoch, name=name)
         LOG.info('--------------------------------------------------')
     
@@ -734,7 +735,7 @@ def train_epoch(train_loader, l_model, r_model, le_model, re_model, l_optimizer,
             r_ema_loss = (1 - args.ema_loss) * r_class_loss.data[0] + args.ema_loss * r_ema_loss
         meters.update('l_ema_loss', l_ema_loss)
         meters.update('r_ema_loss', r_ema_loss)
-
+        
         consistency_loss = 0
         if args.consistency:
             consistency_weight = calculate_consistency_scale(epoch)
@@ -754,9 +755,17 @@ def train_epoch(train_loader, l_model, r_model, le_model, re_model, l_optimizer,
             # left model is better
             if l_ema_loss < r_ema_loss:
                 # if l_class_loss.data[0] < r_class_loss.data[0]:
-                
+                mask = torch.max(F.softmax(l_class_logit, dim=1), 1)[0]
+                mask = (mask > args.threshold)
+
                 # --- TODO: how to setting cons between competitive models ---
+                in_r_cons_logit = Variable(r_cons_logit.detach().data, requires_grad=False)
                 tar_l_class_logit = Variable(l_class_logit.detach().data, requires_grad=False)
+
+                for idx, value in enumerate(mask.data.cpu().numpy()):
+                    if value == 0:
+                        tar_l_class_logit[idx, ...] = in_r_cons_logit[idx, ...]
+
                 consistency_loss = consistency_weight * consistency_criterion(r_cons_logit, tar_l_class_logit) / minibatch_size
                 # ------------------------------------------------------------
 
@@ -768,8 +777,17 @@ def train_epoch(train_loader, l_model, r_model, le_model, re_model, l_optimizer,
             elif l_ema_loss > r_ema_loss:
                 # elif l_class_loss.data[0] > r_class_loss.data[0]:
 
+                mask = torch.max(F.softmax(r_class_logit, dim=1), 1)[0]
+                mask = (mask > args.threshold)
+
                 # --- TODO: how to setting cons between competitive models ---
+                in_l_cons_logit = Variable(l_cons_logit.detach().data, requires_grad=False)
                 tar_r_class_logit = Variable(r_class_logit.detach().data, requires_grad=False)
+
+                for idx, value in enumerate(mask.data.cpu().numpy()):
+                    if value == 0:
+                        tar_r_class_logit[idx, ...] = in_l_cons_logit[idx, ...]
+
                 consistency_loss = consistency_weight * consistency_criterion(l_cons_logit, tar_r_class_logit) / minibatch_size
                 # ------------------------------------------------------------
                 

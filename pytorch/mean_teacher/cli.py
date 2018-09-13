@@ -108,6 +108,9 @@ def create_parser():
     parser.add_argument('--sn-fc-layer', default=False, type=str2bool, metavar='BOOL',
                         help='')
 
+    parser.add_argument('--threshold', default=0.0, type=float, metavar='THRESHOLD',
+                        help='')
+
     return parser
 
 
