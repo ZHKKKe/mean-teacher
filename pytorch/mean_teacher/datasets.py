@@ -78,15 +78,9 @@ def cifar100():
         transforms.Normalize(**channel_stats)
     ])
 
-    if os.path.isdir("/scratch/datasets/cifar/cifar100/by-image/"):
-        datadir = "/scratch/datasets/cifar/cifar100/by-image/"
-    elif os.path.isdir("data-local/images/cifar/cifar100/by-image"):
-        datadir = "data-local/images/cifar/cifar100/by-image"
-    print("Using CIFAR-100 from", datadir)
-
     return {
         'train_transformation': train_transformation,
         'eval_transformation': eval_transformation,
-        'datadir': datadir,
+        'datadir': 'data-local/images/cifar/cifar100/by-image',
         'num_classes': 100
     }

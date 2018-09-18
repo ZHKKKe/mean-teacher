@@ -15,10 +15,8 @@ import main_mean_teacher
 from mean_teacher.cli import parse_dict_args
 from mean_teacher.run_context import RunContext
 
-LOG = logging.getLogger('main')
-fh = logging.FileHandler('log.log')
-fh.setLevel(logging.INFO)
-LOG.addHandler(fh)
+LOG = logging.getLogger('runner')
+
 
 def parameters():
     defaults = {
@@ -32,25 +30,23 @@ def parameters():
         'eval_subdir': 'test',
 
         # Data sampling
-        'base_batch_size': 100,
-        'base_labeled_batch_size': 50,
+        'base_batch_size': 128,
+        'base_labeled_batch_size': 31,
 
         # Architecture
-        'arch': 'cifar_cnn13',
+        'arch': 'cifar_shakeshake26',
 
         # Costs
         'consistency_type': 'mse',
         'consistency_rampup': 5,
         'consistency': 100.0,
-        'logit_distance_cost': 0.01,
-        'weight_decay': 1e-4,
+        'logit_distance_cost': -1,  # Note: closs dual output trick
+        'weight_decay': 2e-4,
 
         # Optimization
         'lr_rampup': 0,
-        'base_lr': 0.05,
+        'base_lr': 0.1,
         'nesterov': True,
-
-        'as_co_train_lr': True,
     }
 
     # # 4000 labels:
@@ -73,6 +69,7 @@ def parameters():
             'n_labels': 1000,
             'data_seed': data_seed,
             'epochs': 300,
+            'lr_rampdown_epochs': 350,
             'ema_decay': 0.97,
         }
 

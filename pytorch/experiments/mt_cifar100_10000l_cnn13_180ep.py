@@ -15,8 +15,10 @@ import main_mean_teacher
 from mean_teacher.cli import parse_dict_args
 from mean_teacher.run_context import RunContext
 
-LOG = logging.getLogger('runner')
-
+LOG = logging.getLogger('main')
+fh = logging.FileHandler('log.log')
+fh.setLevel(logging.INFO)
+LOG.addHandler(fh)
 
 def parameters():
     defaults = {
@@ -25,7 +27,7 @@ def parameters():
         'checkpoint_epochs': 20,
 
         # Data
-        'dataset': 'cifar10',
+        'dataset': 'cifar100',
         'train_subdir': 'train+val',
         'eval_subdir': 'test',
 
@@ -34,39 +36,27 @@ def parameters():
         'base_labeled_batch_size': 31,
 
         # Architecture
-        'arch': 'cifar_shakeshake26',
+        'arch': 'cifar_cnn13',
 
         # Costs
         'consistency_type': 'mse',
         'consistency_rampup': 5,
         'consistency': 100.0,
-        'logit_distance_cost': -1,  # Note: closs dual output trick
+        'logit_distance_cost': 0.01,
         'weight_decay': 2e-4,
 
         # Optimization
         'lr_rampup': 0,
-        'base_lr': 0.05,
+        'base_lr': 0.2,     # lr: cifar100 = cifar10 * 2
         'nesterov': True,
     }
 
-    # # 4000 labels:
-    # for data_seed in range(10, 11):
-    #     yield {
-    #         **defaults,
-    #         'title': '4000-label cifar-10',
-    #         'n_labels': 4000,
-    #         'data_seed': data_seed,
-    #         'epochs': 300,
-    #         'lr_rampdown_epochs': 350,
-    #         'ema_decay': 0.99,
-    #     }
-
-    # 1000 labels:
+    # 10000 labels:
     for data_seed in range(10, 11):
         yield {
             **defaults,
-            'title': '1000-label cifar-10 mt',
-            'n_labels': 1000,
+            'title': '10000-label cifar-100 mt',
+            'n_labels': 10000,
             'data_seed': data_seed,
             'epochs': 180,
             'lr_rampdown_epochs': 210,
@@ -89,7 +79,7 @@ def run(title, base_batch_size, base_labeled_batch_size, base_lr, n_labels,
         'lr':
         base_lr * ngpu,
         'labels':
-        'data-local/labels/cifar10/{}_balanced_labels/{:02d}.txt'.format(
+        'data-local/labels/cifar100/{}_balanced_labels/{:02d}.txt'.format(
             n_labels, data_seed),
     }
     context = RunContext(__file__, "{}_{}".format(n_labels, data_seed))

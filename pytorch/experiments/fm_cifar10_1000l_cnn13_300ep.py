@@ -9,6 +9,7 @@ from mean_teacher.run_context import RunContext
 
 LOG = logging.getLogger('runner')
 
+
 def parameters():
     defaults = {
         # Technical details
@@ -47,16 +48,18 @@ def parameters():
         'ema_model_judge': False,
 
         'as_co_train_lr': True,
+
+        'threshold': 0.8,
     }
 
     # 4000 labels:
     for data_seed in range(10, 11):
         yield {
             **defaults,
-            'title': '4000-label cifar10 fm',
-            'n_labels': 4000,
+            'title': '1000-label cifar10 fm',
+            'n_labels': 1000,
             'data_seed': data_seed,
-            'epochs': 180,
+            'epochs': 300,
         }
 
 def run(title, base_batch_size, base_labeled_batch_size, base_lr, n_labels, data_seed, **kwargs):

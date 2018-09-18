@@ -9,6 +9,7 @@ from mean_teacher.run_context import RunContext
 
 LOG = logging.getLogger('runner')
 
+
 def parameters():
     defaults = {
         # Technical details
@@ -31,7 +32,7 @@ def parameters():
         'consistency_type': 'mse',
         'consistency_rampup': 5,
         'consistency': 100.0,
-        'logit_distance_cost': -1,
+        'logit_distance_cost': .01,
         'weight_decay': 1e-4,
 
         # Optimization
@@ -47,6 +48,8 @@ def parameters():
         'ema_model_judge': False,
 
         'as_co_train_lr': True,
+
+        'threshold': 0.8,
     }
 
     # 4000 labels:
