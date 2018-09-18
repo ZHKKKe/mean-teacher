@@ -111,6 +111,8 @@ def create_parser():
     parser.add_argument('--threshold', default=0.0, type=float, metavar='THRESHOLD',
                         help='')
 
+    parser.add_argument('--draw-feature', default=False, type=str2bool, metavar='BOOL')
+
     return parser
 
 

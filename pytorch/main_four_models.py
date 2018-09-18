@@ -307,7 +307,7 @@ def validate(eval_loader, model, log, global_step, epoch, name):
             output1, dim=1), F.softmax(
                 output2, dim=1)
 
-        if True and feature is not None:
+        if args.draw_feature and feature is not None:
             f_data = feature.data.cpu().numpy()
             t_data = target_var.data.cpu().numpy()
             for idx, f in enumerate(f_data):
@@ -353,7 +353,7 @@ def validate(eval_loader, model, log, global_step, epoch, name):
         # pca_features.append(value.cpu().numpy())
         # pca_labeles.append(key)
 
-    if True:
+    if args.draw_feature:
         LOG.info('--------------- PCA FEATURE DRAWER ---------------')
         from sklearn.decomposition import PCA
         from sklearn.preprocessing import normalize, scale
