@@ -941,7 +941,7 @@ def main(context):
     cudnn.benchmark = True
 
     # l_ema_loss, r_ema_loss = calculate_train_ema_loss(train_loader, l_model, r_model)
-    calculate_initial_center(l_model, r_model, 10, 128, dataset_config['train_transformation'], dataset_config['datadir'], args=args)
+    # calculate_initial_center(l_model, r_model, 10, 128, dataset_config['train_transformation'], dataset_config['datadir'], args=args)
 
     if args.evaluate:
         LOG.info('Evaluating the left model: ')

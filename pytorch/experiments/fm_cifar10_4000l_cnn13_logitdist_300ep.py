@@ -10,6 +10,7 @@ from mean_teacher.run_context import RunContext
 
 LOG = logging.getLogger('runner')
 
+
 def parameters():
     defaults = {
         # Technical details
@@ -49,7 +50,7 @@ def parameters():
 
         'as_co_train_lr': True,
 
-        'smooth_neighbor_scale': 0.01,
+        'threshold': 0.8,
 
     }
 

@@ -7,7 +7,10 @@ import main_four_models
 from mean_teacher.cli import parse_dict_args
 from mean_teacher.run_context import RunContext
 
-LOG = logging.getLogger('runner')
+LOG = logging.getLogger('main')
+fh = logging.FileHandler('log_fm_cifar100_10000l_cnn13_300ep.log')
+fh.setLevel(logging.INFO)
+LOG.addHandler(fh)
 
 def parameters():
     defaults = {
@@ -16,7 +19,7 @@ def parameters():
         'checkpoint_epochs': 20,
 
         # Data
-        'dataset': 'cifar10',
+        'dataset': 'cifar100',
         'train_subdir': 'train+val',
         'eval_subdir': 'test',
 
@@ -32,7 +35,7 @@ def parameters():
         'consistency_rampup': 5,
         'consistency': 100.0,
         'logit_distance_cost': .01,
-        'weight_decay': 1e-4,
+        'weight_decay': 2e-4,
 
         # Optimization
         'lr_rampup': 0,
@@ -55,8 +58,8 @@ def parameters():
     for data_seed in range(10, 11):
         yield {
             **defaults,
-            'title': '1000-label cifar10 fm',
-            'n_labels': 1000,
+            'title': '10000-labels cifar100 fm',
+            'n_labels': 10000,
             'data_seed': data_seed,
             'epochs': 300,
         }
@@ -69,7 +72,7 @@ def run(title, base_batch_size, base_labeled_batch_size, base_lr, n_labels, data
         'batch_size': base_batch_size * ngpu,
         'labeled_batch_size': base_labeled_batch_size * ngpu,
         'lr': base_lr * ngpu,
-        'labels': 'data-local/labels/cifar10/{}_balanced_labels/{:02d}.txt'.format(n_labels, data_seed),
+        'labels': 'data-local/labels/cifar100/{}_balanced_labels/{:02d}.txt'.format(n_labels, data_seed),
     }
     context = RunContext(__file__, "{}_{}".format(n_labels, data_seed))
     main_four_models.args = parse_dict_args(**adapted_args, **kwargs)
